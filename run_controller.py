@@ -1,5 +1,6 @@
 if __name__ == "__main__":
-    from mocap.server import Controller
+    from mocap.controller import Controller
     controller = Controller("configs/config.yaml")
     print("MAIN: Start program")
-    controller.receive_commands()
+    controller.run()
+    print("MAIN: Stop program")

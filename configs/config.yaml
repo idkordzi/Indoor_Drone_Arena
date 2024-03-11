@@ -1,44 +1,48 @@
-# Main server general configuration
+# Detection receiver config
 SERVER:
-    DIR: "received_data/"
+    DIR: "server/"
     TIMEOUT: 10.0
     CLEAR: True
 
-# Controller general configuration
+# Controller config
 CONTROLLER:
-    IP: [127.0.0.1] # ["192.168.50.119"]
+    # IP: [127.0.0.1]
+    IP: ["192.168.50.119"]
     PORT: ["4000"]
 
-# Edge device general configuration
+# Edge device config
 EDGE:
-    DIR: "recorded_data/"
+    DIR: "edge/"
     NB: 100
     STEP: 1
     CLEAR: True
 
-# List of publishers IP addresses
+# List of publishers IPs
 PUBLISHERS:
     IP: ["192.168.50.127", "192.168.50.135", "192.168.50.143", "192.168.50.151"]
-    PORT: ["5555", "5550"]
+    PORT_IMG: ["5550"]
+    PORT_PTS: ["5555"]
 
-# Camera general configuration
+# Camera config
 CAMERA:
     FPS: 60
     EXPOSURE: 6000
-    EXT_TRIGGER: False
-    IM_HEIGHT: 1.0
-    IM_WIDTH: 1.0
+    EXT_TRIGGER: True
 
-# Markers detectin parameters
+# Detection config
 DETECTION:
-    BIN_THR: 160 # 180
-    K_SIZE: 21 # 21
-    CIRC_THR: 0.2 # 0.8
-    W_H_DIFF: 20 # 20
-    MARK_SIZE: 20 # 100
-    AREA_THR: 1 # 80
+    MODE: 0
+    BY_MARKERS:
+        BIN_THR: 180 # 180
+        K_SIZE: 21 # 21
+        CIRC_THR: 0.2 # 0.8
+        W_H_DIFF: 20 # 20
+        MARK_SIZE: 50 # 100
+        AREA_THR: 1 # 80
+    BY_FOREGROUND:
+        THR: 0
 
-# Stereo calibration parameteres
+# Stereo calibration config
 CALIB:
     ROWS: 6
     COLS: 9

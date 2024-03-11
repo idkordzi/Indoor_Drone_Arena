@@ -1,8 +1,6 @@
 if __name__ == "__main__":
     from mocap.server import Server
-    server = Server("configs/config.yaml", 1)
+    server = Server("configs/config.yaml")
     print("MAIN: Start program")
-    server.run()
-    input("")
-    server.stop()
+    server.listen()
     print("MAIN: Stop program")

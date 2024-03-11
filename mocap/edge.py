@@ -6,17 +6,24 @@ from multiprocessing import Process, Array, Pipe
 
 import cv2
 import numpy as np
-
 from pypylon import pylon
+
+from .header import (
+    PATTERN,
+    PATTERN_PNB,
+    CMD_LEN,
+    CMD_OFFSET_EDGE,
+    read_config,
+    move_pattern,
+)
 from .imagezmq import ImageSender, ImageHub
 from .utils import (
-    PATTERN,
     SampleImageEventHandler,
     ImageSaver,
-    read_config,
-    detect_markers,
-    move_pattern,
+    detect_by_markers,
+    find_corresponding_points,
     get_homography_matrix,
+    get_projection_matrix,
 )
 
 
@@ -26,6 +33,7 @@ class MocapCamera():
         
         # Read configuration
         self.config = read_config(config_file)
+        self.cmd_range = [CMD_OFFSET_EDGE, CMD_OFFSET_EDGE+CMD_LEN-1]
 
         # Get device IP address
         self.connected = network_connected
@@ -44,29 +52,8 @@ class MocapCamera():
         self.camera.Open()
         
         # Get image shape
-        c_im_width  = self.config["CAMERA"].get("IM_WIDTH", 1.0)
-        c_im_height = self.config["CAMERA"].get("IM_HEIGHT", 1.0)
-        
-        if type(c_im_width) is int:
-            self.im_width = c_im_width
-        elif type(c_im_width) is float:
-            self.im_width = int(self.camera.Width.GetValue() * c_im_width)
-        if self.im_width > self.camera.Width.GetValue():
-            print("MocapCamera::__init__::WARNING: Requested image width is greater than camera default")
-        
-        if type(c_im_height) is int:
-            self.im_height = c_im_height
-        elif type(c_im_height) is float:
-            self.im_height = int(self.camera.Height.GetValue() * c_im_height)
-        if self.im_height > self.camera.Height.GetValue():
-            print("MocapCamera::__init__::WARNING: Requested image height is greater than camera default")
-        
-        if self.im_width == self.camera.Width.GetValue() and self.im_height == self.camera.Height.GetValue():
-            self.resize_en = False
-        else:
-            self.resize_en = True
-        
-        # End camera configuration
+        self.im_width = self.camera.Width.GetValue()
+        self.im_height = self.camera.Height.GetValue()
         self.camera.Close()
         
         # Create shared memory
@@ -79,12 +66,22 @@ class MocapCamera():
         # Create blocker flag
         self.blocked = False
         self.process = None
+        
+        # Create class for frame saving
+        self.imgSaver = ImageSaver(
+            dir =self.config["EDGE"].get("DIR", "edge/"),
+            nb  =self.config["EDGE"].get("NB", 0),
+            step=self.config["EDGE"].get("STEP", 1),
+            clr =self.config["EDGE"].get("CLEAR", True),
+        )
+        
+        # Get detection mode
+        self.detection_mode = self.config["DETECTION"].get("MODE", 0)
     
     def run_sending(self):
         if self.blocked:
-            print("MocapCamera::run_sending::WARNING: This process is already running - cannot start another one!")
+            print("MocapCamera::run_sending::WARNING: One process is already running - cannot start another one!")
             return
-        
         self.process = Process(
             target=_mp_send_images,
             args=(self.camera_pipe[1],
@@ -94,39 +91,12 @@ class MocapCamera():
                   self.config,
                   self.ip_addr)
         )
-        self.blocked = True
-        
-        self.camera.Open()
-        self._setup_camera()
-        self._start_camera()
-        self.process.start()
+        self._run()
 
     def run_detection(self):
         if self.blocked:
-            print("MocapCamera::run_detection::WARNING: This process is already running - cannot start another one!")
+            print("MocapCamera::run_detection::WARNING: One process is already running - cannot start another one!")
             return
-        
-        self.process = Process(
-            target=_mp_detect_markers, 
-            args=(self.camera_pipe[1],
-                  self.shared_memory,
-                  self.im_height,
-                  self.im_width,
-                  self.config,
-                  self.ip_addr)
-        )
-        self.blocked = True
-        
-        self.camera.Open()
-        self._setup_camera()
-        self._start_camera()
-        self.process.start()
-    
-    def run_detection_and_sending(self):
-        if self.blocked:
-            print("MocapCamera::run_detection::WARNING: This process is already running - cannot start another one!")
-            return
-        
         self.process = Process(
             target=_mp_send_detections, 
             args=(self.camera_pipe[1],
@@ -136,81 +106,45 @@ class MocapCamera():
                   self.config,
                   self.ip_addr)
         )
-        self.blocked = True
-        
-        self.camera.Open()
-        self._setup_camera()
-        self._start_camera()
-        self.process.start()
+        self._run()
     
-    def run_calibration(self):
+    def run_detection_and_sending(self):
         if self.blocked:
-            print("MocapCamera::run_calibration::WARNING: This process is already running - cannot start another one!")
+            print("MocapCamera::run_detection::WARNING: One process is already running - cannot start another one!")
             return
-        
         self.process = Process(
-            target=_mp_collect_calibration_data,
+            target=_mp_send_detections_and_images, 
             args=(self.camera_pipe[1],
+                  self.shared_memory,
+                  self.im_height,
+                  self.im_width,
+                  self.config,
+                  self.ip_addr)
+        )
+        self._run()
+    
+    def _run_dummy(self):
+        if self.blocked:
+            print("MocapCamera::run_calibration::WARNING: One process is already running - cannot start another one!")
+            return
+        self.process = Process(
+            target=_mp_dummy_proc,
+            args=(self.camera_pipe,
                   self.shared_memory,
                   self.im_height,
                   self.im_width,
                   self.config)
         )
+        self._run()
+    
+    def _run(self):
         self.blocked = True 
-        
         self.camera.Open()
         self._setup_camera()
         self._start_camera()
         self.process.start()
     
-    def _calibrate_device(self):
-        
-        from .utils import find_corresponding_points
-        
-        self.camera.Open()
-        self._setup_camera()
-        self._start_camera()
-        
-        shared_np = np.frombuffer(self.shared_memory.get_obj(), dtype=np.uint8)
-        new_pattern = move_pattern(PATTERN, v=[0., 0., 0.])
-        
-        cam_id = 127
-        
-        while True:
-            status = self.camera_pipe[1].recv()
-            if status == "STOP": break
-            with self.shared_memory.get_lock():
-                frame = np.copy(shared_np)
-                frame = frame.reshape((self.im_height, self.im_width))
-            objs = detect_markers(frame, self.config["DETECTION"])
-            
-            if len(objs) != 6:
-                continue
-            
-            indexed_markers = [(0, x, y) for x, y, _ in objs]
-            sorted_markers = find_corresponding_points(indexed_markers)
-            
-            blank = np.zeros((self.im_height, self.im_width, 3), dtype=np.uint8)
-            for i in [0,1,2]: blank[:,:,i] = frame
-            for x, y, r in objs:
-                cv2.circle(blank, (int(x), int(y)), int(r*2), (0,0,255), 2)
-            for idx, x, y in sorted_markers:
-                cv2.putText(blank, f"{idx+1}", (int(x)+10, int(y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
-            blank = cv2.resize(blank, None, fx=0.5, fy=0.5)
-            print(f"{np.array(objs).shape}")
-            cv2.imshow("frame", blank)
-            
-            res = cv2.waitKey(1)
-            if res == ord('s'):
-                H = get_homography_matrix(cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB), objs, new_pattern, True)
-                np.save(f"saved_data/H_{cam_id}.npy", H)
-                print(f"SAVED FILE TO [saved_data/H_{cam_id}.npy]")
-            elif res == ord('q'):
-                break
-        self.stop()
-    
     def _setup_camera(self):
-        
         ext_trigger = self.config["CAMERA"].get("EXT_TRIGGER", False) 
         if ext_trigger:
             # self.camera.LineSelector.SetValue("Line3")
@@ -223,21 +157,18 @@ class MocapCamera():
             fps = self.config["CAMERA"].get("FPS", 30)
             self.camera.AcquisitionFrameRateEnable.SetValue(True)
             self.camera.AcquisitionFrameRate.SetValue(fps)
-        
         exposure_time = self.config["CAMERA"].get("EXPOSURE", 10000.0)
         self.camera.ExposureTime.SetValue(exposure_time)
         self.camera.PixelFormat.SetValue("Mono8")
         
-        # Set camera events handling
         if ext_trigger: 
             self.camera.RegisterConfiguration(
                 pylon.SoftwareTriggerConfiguration(),
                 pylon.RegistrationMode_ReplaceAll,
                 pylon.Cleanup_Delete,
             )
-        
         self.camera.RegisterImageEventHandler(
-            SampleImageEventHandler(self.camera_pipe[0], self.shared_memory, self.im_width, self.im_height, self.resize_en), 
+            SampleImageEventHandler(self.camera_pipe[0], self.shared_memory, self.im_width, self.im_height), 
             pylon.RegistrationMode_Append,
             pylon.Cleanup_Delete,
         )
@@ -267,32 +198,140 @@ class MocapCamera():
         controller_ip   = self.config["CONTROLLER"]["IP"][0]
         controller_port = self.config["CONTROLLER"]["PORT"][0]
         self.listener = ImageHub(f"tcp://{controller_ip}:{controller_port}", REQ_REP=False)
-        
         while True:
             msg, command = self.listener.recv_image()
             print(f"MocapCamera::listen: Receiving: [{msg}] {command}")
-            if msg == controller_ip:
+            if msg == controller_ip and self.cmd_range[0] <= command[0] <= self.cmd_range[1]:
+                code = command[0] - self.cmd_range[0]
                 
-                if command == 0:
+                if code == 0:
+                    if self.blocked: self.stop()
+                    print("MocapCamera::listen: Subprocess: STOP")
+                elif code == 1:
+                    print("MocapCamera::listen: Run: [run_sending]")
+                    self.run_sending()
+                elif code == 2:
+                    print("MocapCamera::listen: Run: [run_detection]")
+                    self.run_detection()
+                elif code == 3:
+                    print("MocapCamera::listen: Run: [run_detection_and_sending]")
+                    self.run_detection_and_sending()
+                elif code == 7:
                     if self.blocked: self.stop()
                     print("MocapCamera::listen: Subprocess: STOP")
                     print("MocapCamera::listen: Program: STOP")
                     break
-                elif command == 1:
-                    if self.blocked: self.stop()
-                    print("MocapCamera::listen: Subprocess: STOP")
-                elif command == 2:
-                    print("MocapCamera::listen: Run: [run_sending]")
-                    self.run_sending()
-                elif command == 3:
-                    print("MocapCamera::listen: Run: [run_detection]")
-                    self.run_detection()
                 else:
-                    print("MocapCamera::listen::WARNING: Unknown command")
+                    print(f"MocapCamera::listen::WARNING: Unknown command: [{code}]")
+    
+    def _calibrate_camera(self):
+        self.camera.Open()
+        self._setup_camera()
+        self._start_camera()
+        shared_np = np.frombuffer(self.shared_memory.get_obj(), dtype=np.uint8)
+        scale = 0.5
+        flag = False
+        while True:
+            status = self.camera[1].recv()
+            if status == "STOP": break
+            with self.shared_memory.get_lock():
+                frame = np.copy(shared_np)
+                frame = frame.reshape((self.im_height, self.im_width))
+            cv2.imshow("frame", cv2.resize(frame, None, fx=scale, fy=scale))
+            res = cv2.waitKey(1)
+            if res == ord('q'):
+                print(f"MocapCamera::SUBPROCESS::_calibrate_camera: Calibrate: STOP")
+                break
+            elif res == ord('s'):
+                flag = self.imgSaver.save_image(frame)
+                print(f"MocapCamera::SUBPROCESS::_calibrate_camera: Frame saved") 
+            if flag:
+                print(f"MocapCamera::SUBPROCESS::_calibrate_camera: Maximum number of images reached")
+                break
+        cv2.destroyWindow("frame")
+        self.stop()
+    
+    def _compute_homography_matrix(self):
+        self.camera.Open()
+        self._setup_camera()
+        self._start_camera()
+        shared_np = np.frombuffer(self.shared_memory.get_obj(), dtype=np.uint8)
+        new_pattern = move_pattern(PATTERN, v=[0., 0., 0.])
+        scale = 0.5
+        flag_en = False
+        cam_id = self.ip_addr.split(".")[-1]
+        while True:
+            status = self.camera_pipe[1].recv()
+            if status == "STOP": break
+            with self.shared_memory.get_lock():
+                frame = np.copy(shared_np)
+                frame = frame.reshape((self.im_height, self.im_width))
+            objs = detect_by_markers(frame, self.config["DETECTION"])
+            flag_en = (len(objs) == PATTERN_PNB)
+            if flag_en:
+                indexed_markers = [(0, x, y) for x, y, _ in objs]
+                sorted_markers = find_corresponding_points(indexed_markers)
+            blank = np.zeros((self.im_height, self.im_width, 3), dtype=np.uint8)
+            for i in [0,1,2]: blank[:,:,i] = frame
+            for x, y, r in objs:
+                cv2.circle(blank, (int(x), int(y)), int(r*2), (0,0,255), 2)
+            if flag_en:
+                for idx, x, y in sorted_markers:
+                    cv2.putText(blank, f"{idx+1}", (int(x)+10, int(y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+            blank = cv2.resize(blank, None, fx=scale, fy=scale)
+            print(f"{np.array(objs).shape}")
+            cv2.imshow("frame", blank)
+            res = cv2.waitKey(1)
+            if res == ord('s') and flag_en:
+                H = get_homography_matrix(cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB), objs, new_pattern, True)
+                np.save(f"edge/H_{cam_id}.npy", H)
+                print(f"SAVED FILE TO [edge/H_{cam_id}.npy]")
+            elif res == ord('q'):
+                break
+        self.stop()
+    
+    def _compute_projection_matrix(self):
+        self.camera.Open()
+        self._setup_camera()
+        self._start_camera()
+        shared_np = np.frombuffer(self.shared_memory.get_obj(), dtype=np.uint8)
+        new_pattern = move_pattern(PATTERN, v=[0., 0., 0.])
+        scale = 0.5
+        flag_en = False
+        cam_id = self.ip_addr.split(".")[-1]
+        while True:
+            status = self.camera_pipe[1].recv()
+            if status == "STOP": break
+            with self.shared_memory.get_lock():
+                frame = np.copy(shared_np)
+                frame = frame.reshape((self.im_height, self.im_width))
+            objs = detect_by_markers(frame, self.config["DETECTION"])
+            flag_en = (len(objs) == PATTERN_PNB)
+            if flag_en:
+                indexed_markers = [(0, x, y) for x, y, _ in objs]
+                sorted_markers = find_corresponding_points(indexed_markers)
+            blank = np.zeros((self.im_height, self.im_width, 3), dtype=np.uint8)
+            for i in [0,1,2]: blank[:,:,i] = frame
+            for x, y, r in objs:
+                cv2.circle(blank, (int(x), int(y)), int(r*2), (0,0,255), 2)
+            if flag_en:
+                for idx, x, y in sorted_markers:
+                    cv2.putText(blank, f"{idx+1}", (int(x)+10, int(y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+            blank = cv2.resize(blank, None, fx=scale, fy=scale)
+            print(f"{np.array(objs).shape}")
+            cv2.imshow("frame", blank)
+            res = cv2.waitKey(1)
+            if res == ord('s') and flag_en:
+                P = get_projection_matrix(cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB), objs, new_pattern, True)
+                np.save(f"edge/P_{cam_id}.npy", P)
+                print(f"SAVED FILE TO [edge/P_{cam_id}.npy]")
+            elif res == ord('q'):
+                break
+        self.stop()
 
 
 def _mp_send_images(
-    pipe_in,
+    pipe_out,
     shared_memory,
     im_height: int,
     im_width: int,
@@ -303,88 +342,22 @@ def _mp_send_images(
     """ Send images to the server """
     
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
-    pub_port = config["PUBLISHERS"]["PORT"][0]
+    pub_port = config["PUBLISHERS"]["PORT_IMG"][0]
     sender = ImageSender(connect_to=f"tcp://*:{pub_port}", REQ_REP=False)
-    
-    # DEBUG
-    cnt = 0
-    
+    print(f"MocapCamera::SUBPROCESS::_mp_send_images: Start processing")
     while True:
-        status = pipe_in.recv()
+        status = pipe_out.recv()
         if status == "STOP": break
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        
-        # DEBUG
-        cnt += 1
-        frame = cv2.putText(frame, f"frame: {cnt}", (50,50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-        print(f"MocapCamera::SUBPROCESS::_mp_send_images: Sent frame no. [{cnt}]")
-        cv2.waitKey(100)
-        
         _, frame = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         sender.send_jpg_pubsub(f"{msg}", frame)
-    
-    return
-
-
-def _mp_detect_markers(
-    pipe_in,
-    shared_memory,
-    im_height: int,
-    im_width: int,
-    config: dict,
-    msg: str,
-) -> None:
-    
-    """ Thread used for marker detection """
-
-    shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
-    pub_port = config["PUBLISHERS"]["PORT"][0]
-    sender = ImageSender(connect_to=f"tcp://*:{pub_port}", REQ_REP=False)
-    
-    # DEBUG
-    plist = []
-    cam_id = 127
-    ct = 0
-        
-    while True:
-        status = pipe_in.recv()
-        if status == "STOP": break
-        with shared_memory.get_lock():
-            frame = np.copy(shared_np)
-            frame = frame.reshape((im_height, im_width))
-        objs = detect_markers(frame, config["DETECTION"])
-        
-        blank = np.zeros((im_height, im_width, 3), dtype=np.uint8)
-        for i in [0,1,2]: blank[:,:,i] = frame
-        for x, y, r in objs:
-            cv2.circle(blank, (int(x), int(y)), int(r*2), (0,0,255), 2)
-        blank = cv2.resize(blank, None, fx=0.5, fy=0.5)
-        print(f"{np.array(objs).shape}")
-        # for pt in objs:
-        #     print(f"[{} {}]")
-        cv2.imshow("frame", blank)
-        
-        res = cv2.waitKey(1)
-        if res == ord('s'):
-            plist.append(objs)
-            print("PTS SAVED: OK")
-        if res == ord('i'):
-            cv2.imwrite(f"recorded_data/detections/im_{cam_id}_{ct}.bmp", frame)
-            ct += 1
-            print("IMG SAVED: OK")
-        
-        sender.send_image_pubsub(f"{msg}", np.array(objs, dtype=np.float32))
-    
-    to_save = np.array(plist)
-    np.save(f"recorded_data/detections/det_{cam_id}.npy", to_save)
-    
     return
 
 
 def _mp_send_detections(
-    pipe_in,
+    pipe_out,
     shared_memory,
     im_height: int,
     im_width: int,
@@ -394,98 +367,162 @@ def _mp_send_detections(
     
     """ Thread used for marker detection """
 
+    detection_mode = config["DETECTION"].get("MODE", 0)
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
-    pub_port_det = config["PUBLISHERS"]["PORT"][0]
-    sender_det = ImageSender(connect_to=f"tcp://*:{pub_port_det}", REQ_REP=False)
-    pub_port_img = config["PUBLISHERS"]["PORT"][1]
-    sender_img = ImageSender(connect_to=f"tcp://*:{pub_port_img}", REQ_REP=False)
-        
+    pub_port = config["PUBLISHERS"]["PORT_PTS"][0]
+    sender = ImageSender(connect_to=f"tcp://*:{pub_port}", REQ_REP=False)
+    print(f"MocapCamera::SUBPROCESS::_mp_send_images: Start processing")
     while True:
-        status = pipe_in.recv()
+        status = pipe_out.recv()
         if status == "STOP": break
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        objs = detect_markers(frame, config["DETECTION"])
-        _, frame = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-        
-        sender_det.send_image_pubsub(f"{msg}", np.array(objs, dtype=np.float32))
-        sender_img.send_jpg_pubsub(f"{msg}", frame)
-    
+        if detection_mode == 0:
+            objs = detect_by_markers(frame, config["DETECTION"]["BY_MARKERS"])
+        elif detection_mode == 1:
+            objs = None
+        sender.send_image_pubsub(f"{msg}", np.array(objs, dtype=np.float32))
     return
 
 
-def _mp_collect_calibration_data(
-    pipe_in,
-    shared_memory,
-    im_height: int,
-    im_width: int,
-    config: dict,
-) -> None:
-    
-    """ Thread used for marker detection """
-    
-    shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
-    imgSaver = ImageSaver(
-        dir =config["EDGE"].get("DIR", "recorded_data/"),
-        nb  =config["EDGE"].get("NB", 0),
-        step=config["EDGE"].get("STEP", 1),
-        clr =config["EDGE"].get("CLEAR", True),
-    )
-    
-    scale = 0.5
-    flag = False
-    while True:
-        status = pipe_in.recv()
-        if status == "STOP": break
-        with shared_memory.get_lock():
-            frame = np.copy(shared_np)
-            frame = frame.reshape((im_height, im_width))
-        
-        cv2.imshow("frame", cv2.resize(frame, None, fx=scale, fy=scale))
-        res = cv2.waitKey(1)
-        if res == ord('q'):
-            print(f"MocapCamera::SUBPROCESS::_mp_collect_calibration_data: Subprocess: STOP")
-            break
-        elif res == ord('s'):
-            flag = imgSaver.save_image(frame)
-            print(f"MocapCamera::SUBPROCESS::_mp_collect_calibration_data: Frame saved") 
-        if flag:
-            print(f"MocapCamera::SUBPROCESS::_mp_collect_calibration_data: Maximum number of images reached")
-            break
-    
-    cv2.destroyWindow("frame")
-        
-    return
-
-
-def _mp_dummy_proc(
+def _mp_send_detections_and_images(
     pipe_out,
     shared_memory,
     im_height: int,
     im_width: int,
-    resize_en: bool,
-    wait_s: float=16.0,
+    config: dict,
+    msg: str,
 ) -> None:
     
+    """ Thread used for marker detection """
+    
+    detection_mode = config["DETECTION"].get("MODE", 0)
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
-    
-    # Create dummy image
-    img = np.zeros((im_height, im_width), dtype=np.uint8)
-    wait_ns = int(wait_s*1000)
-    
+    pub_port_img = config["PUBLISHERS"]["PORT_IMG"][0]
+    sender_img = ImageSender(connect_to=f"tcp://*:{pub_port_img}", REQ_REP=False)
+    pub_port_det = config["PUBLISHERS"]["PORT_PTS"][0]
+    sender_det = ImageSender(connect_to=f"tcp://*:{pub_port_det}", REQ_REP=False)
+    print(f"MocapCamera::SUBPROCESS::_mp_send_images: Start processing")
     while True:
+        status = pipe_out.recv()
+        if status == "STOP": break
         with shared_memory.get_lock():
-            if resize_en:
-                resized = cv2.resize(img, (im_width, im_height))
-                shared_np[:] = resized.reshape(-1)
-            else:
-                shared_np[:] = img.reshape(-1)
-        pipe_out.send("OK")
+            frame = np.copy(shared_np)
+            frame = frame.reshape((im_height, im_width))
+        if detection_mode == 0:
+            objs = detect_by_markers(frame, config["DETECTION"]["BY_MARKERS"])
+        elif detection_mode == 1:
+            objs = None
+        _, frame = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        sender_img.send_jpg_pubsub(f"{msg}", frame)
+        sender_det.send_image_pubsub(f"{msg}", np.array(objs, dtype=np.float32))
+    return
+
+
+def _mp_dummy_proc(
+    pipe,
+    shared_memory,
+    im_height: int,
+    im_width: int,
+    config: dict,
+    mode: int=0,
+    resize_en: bool=False,
+    wait_ns: float=16.0,
+    msg: str="127.0.0.1",
+) -> None:
+    
+    print(f"MocapCamera::SUBPROCESS::_mp_dummy: Init process")
+    shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
+    cnt = 0
+    
+    # Mode 0.: Play the role of camera and create frames toprocess
+    if mode == 0:
         
-        # time.sleep(wait_s)
+        blank = np.zeros((im_height, im_width), dtype=np.uint8)
+        while True:
+            image = blank.copy()
+            cv2.putText(image, f"FRAME: {cnt}", (20,20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+            cnt += 1
+            
+            with shared_memory.get_lock():
+                if resize_en:
+                    resized = cv2.resize(image, (im_width, im_height))
+                    shared_np[:] = resized.reshape(-1)
+                else:
+                    shared_np[:] = image.reshape(-1)
+            pipe[0].send("OK")
+            
+            cv2.imshow("dummy", image)
+            if cv2.waitKey(wait_ns) == ord('q'):
+                print(f"MocapCamera::SUBPROCESS::_mp_dummy: Dummy: STOP")
+                break
+
+    # Mode 1.: Receive frames and do processing (use for debuging locally)
+    elif mode == 1:
         
-        cv2.imshow("dummy", img)
-        if cv2.waitKey(wait_ns) == ord('q'):
-            print(f"MocapCamera::SUBPROCESS::_mp_dummy_proc: Dummy - STOP")
-            break
+        scale = 0.5
+        cam_id = 0
+        while True:
+            status = pipe[1].recv()
+            if status == "STOP": break
+            with shared_memory.get_lock():
+                frame = np.copy(shared_np)
+                frame = frame.reshape((im_height, im_width))
+
+            # # Display image from camera
+            # frame_copy = frame.copy()
+            # cv2.putText(frame_copy, f"FRAME: {cnt}", (50,50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+            # cnt += 1
+            # print(f"MocapCamera::SUBPROCESS::_mp_dummy: Frame no. [{cnt}]")
+            # cv2.imshow("dummy", frame_copy)
+            # req = cv2.waitKey(1)
+            
+            # # Display detections on image
+            # objs = detect_markers(frame, config["DETECTION"])
+            # blank = np.zeros((im_height, im_width, 3), dtype=np.uint8)
+            # for i in [0,1,2]: blank[:,:,i] = frame[:, :]
+            # for x, y, r in objs:
+            #     cv2.circle(blank, (int(x), int(y)), int(r*2), (0,0,255), 2)
+            # blank = cv2.resize(blank, None, fx=scale, fy=scale)
+            # print(f"{np.array(objs).shape}")
+            # cv2.imshow("dummy", blank)
+            # req = cv2.waitKey(1)
+            
+            # # Save detections
+            # cnt += 1
+            # plist = []
+            # if req == ord('s'):
+            #     plist.append(objs)
+            #     print("MocapCamera::SUBPROCESS::_mp_dummy: Points saved")
+            # if req == ord('f'):
+            #     to_save = np.array(plist)
+            #     np.save(f"recorded_data/detections/det_{cam_id}.npy", to_save)
+            # if req == ord('i'):
+            #     cv2.imwrite(f"recorded_data/im_{cam_id}_{cnt:3d}.jpg", frame)
+            #     cnt += 1
+            #     print("MocapCamera::SUBPROCESS::_mp_dummy: Frame saved")
+    
+    # Mode 1.: Receive frames and do processing (and send results)
+    elif mode == 2:
+        
+        pub_port = config["PUBLISHERS"]["PORT"][0]
+        sender = ImageSender(connect_to=f"tcp://*:{pub_port}", REQ_REP=False)
+        while True:
+            status = pipe[1].recv()
+            if status == "STOP": break
+            with shared_memory.get_lock():
+                frame = np.copy(shared_np)
+                frame = frame.reshape((im_height, im_width))
+            
+            # # Send image from camera
+            # frame_copy = frame.copy()
+            # frame_copy = cv2.putText(frame_copy, f"FRAME: {cnt}", (50,50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+            # cnt += 1
+            # print(f"MocapCamera::SUBPROCESS::_mp_dummy: Frame no. [{cnt}]")
+            # _, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            # sender.send_jpg_pubsub(f"{msg}", encoded)
+            
+            # # Send detections
+            # objs = detect_markers(frame, config["DETECTION"])
+            # sender.send_image_pubsub(f"{msg}", np.array(objs, dtype=np.float32))

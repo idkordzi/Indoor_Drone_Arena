@@ -1,8 +1,6 @@
 if __name__ == "__main__":
     from mocap.edge import MocapCamera
-    cam = MocapCamera("configs/config.yaml", True)
+    edge = MocapCamera("configs/config.yaml", True)
     print("MAIN: Start program")
-    cam.run_calibration()
-    input("")
-    cam.stop()
+    edge.listen()
     print("MAIN: Stop program")

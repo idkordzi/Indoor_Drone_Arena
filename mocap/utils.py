@@ -1,5 +1,4 @@
 import os
-import yaml
 import threading
 
 from pathlib import Path
@@ -11,33 +10,8 @@ import matplotlib.pyplot as plt
 
 from pypylon import pylon
 from sklearn.metrics import r2_score
+from .header import K_DEFAULT
 from .imagezmq import ImageHub
-
-
-# ################################################################################################################################
-# Constants
-# ################################################################################################################################
-
-
-CAMERAS_NB = 4
-CAMERA_IDXS = [127, 135, 143, 151]
-
-K_DEFAULT = np.array([[162,   0, 720],
-                      [  0, 162, 540],
-                      [  0,   0,   1]], dtype="double")
-
-CHESSBOARD_LAYOUT = (6, 9)
-CHESSBOARD_CALIB_CRITERIA = (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-
-PATTERN_PNB = 6
-PATTERN = {
-    0: [0.000, 0.000, 0.0],
-    1: [0.175, 0.000, 0.0],
-    2: [0.350, 0.000, 0.0],
-    3: [0.350, 0.350, 0.0],
-    4: [0.000, 0.350, 0.0],
-    5: [0.000, 0.175, 0.0],
-}
 
 
 # ################################################################################################################################
@@ -47,13 +21,11 @@ PATTERN = {
 
 class SampleImageEventHandler(pylon.ImageEventHandler):
     
-    def __init__(self, pipe_out, shared_memory, im_width: int, im_height: int, resize_en: bool=True, *args, **kwargs):
+    def __init__(self, pipe_in, shared_memory, im_width: int, im_height: int, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pipe_out = pipe_out
+        self.pipe_in = pipe_in
         self.shared_memory = shared_memory
         self.shared_memory_np = np.frombuffer(self.shared_memory.get_obj(), dtype=np.uint8)
-        
-        self.resize_en = resize_en
         self.im_width  = im_width
         self.im_height = im_height
     
@@ -61,16 +33,11 @@ class SampleImageEventHandler(pylon.ImageEventHandler):
         if grabResult.GrabSucceeded():
             img = grabResult.GetArray()
             with self.shared_memory.get_lock():
-                if self.resize_en:
-                    resized = cv2.resize(img, (self.im_width, self.im_height))
-                    self.shared_memory_np[:] = resized.reshape(-1)
-                else:
-                    self.shared_memory_np[:] = img.reshape(-1)
-            self.pipe_out.send("OK")
+                self.shared_memory_np[:] = img.reshape(-1)
+            self.pipe_in.send("OK")
 
 
 class ImageSaver():
-    """ Simple class for saving images to a temporary folder, can be used for calibration/debuging """
     
     def __init__(self, dir: str, nb: int, step: int, clr: bool=True):
         if clr:
@@ -104,7 +71,6 @@ class ImageSaver():
             self.dir.rmdir()
 
 
-# Helper class implementing an IO deamon thread
 class VideoStreamSubscriber:
 
     def __init__(self, hostnames: list, port: str, mode: int=1):
@@ -113,6 +79,7 @@ class VideoStreamSubscriber:
         self.mode = mode
         
         self._stop = False
+        self._data = (None, None)
         self._data_ready = threading.Event()
         self._thread = threading.Thread(target=self._run, args=())
         self._thread.daemon = True
@@ -123,9 +90,11 @@ class VideoStreamSubscriber:
     def receive(self, timeout: float=15.0) -> tuple:
         flag = self._data_ready.wait(timeout=timeout)
         if not flag:
-            raise TimeoutError("VideoStreamSubscriber::receive::ERROR: Timeout while waiting for publisher")
+            print(f"VideoStreamSubscriber::receive::ERROR: Timeout while waiting for [{self.hostnames[0]}:{self.port}]")
+            self.close()
+            return False, *self._data
         self._data_ready.clear()
-        return self._data
+        return True, *self._data
 
     def _run(self) -> None:
         receiver = ImageHub("tcp://{}:{}".format(self.hostnames[0], self.port), REQ_REP=False)
@@ -148,18 +117,6 @@ class VideoStreamSubscriber:
 # ################################################################################################################################
 # Functions (Edge device)
 # ################################################################################################################################
-
-
-def read_config(config_file: str) -> dict:
-    with open(config_file, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
-
-
-def get_chessborad_points(rows: int=6, cols: int=9) -> np.ndarray:
-    points = np.zeros((rows*cols,3), np.float32)
-    points[:,:2] = np.mgrid[0:cols,0:rows].T.reshape(-1,2)
-    return points
 
 
 def calibrate_camera(imgs_path: str, config: dict, vis: bool=False) -> tuple:
@@ -204,22 +161,14 @@ def calibrate_camera(imgs_path: str, config: dict, vis: bool=False) -> tuple:
     return calib_res
 
 
-def move_pattern(pattern: dict, v: list=None, x: float=None, y: float=None, z: float=None):
-    if v is None or len(v) != 3:
-        if x is None: x = 0.0
-        if y is None: y = 0.0
-        if z is None: z = 0.0
-        v = [x, y, z]
-    new_pattern = {}
-    for idx, coor in pattern.items():
-        new_pattern[idx] = [coor[0]+v[0], coor[1]+v[1], coor[2]+v[2]]
-    return new_pattern
-
-
-def get_homography_matrix(image: np.ndarray, markers: list, pattern: dict, vis: bool=False):
+def get_homography_matrix(image: np.ndarray, markers: list, pattern: dict, vis: bool=False) -> np.ndarray:
 
     indexed_markers = [(0, x, y) for x, y, _ in markers]
     sorted_markers = find_corresponding_points(indexed_markers)
+    
+    img_points = np.array([[x, y, 0.] for _, x, y in sorted_markers], dtype='double')
+    obj_points = np.array([pattern[idx][0:2] + [0.]  for idx, _, _ in sorted_markers], dtype='double')
+    H, _ = cv2.findHomography(img_points, obj_points, method=cv2.RANSAC)
     
     # if vis:
     #     image_copy = image.copy()
@@ -229,14 +178,22 @@ def get_homography_matrix(image: np.ndarray, markers: list, pattern: dict, vis: 
     #     plt.imshow(image_copy)
     #     plt.show()
 
-    img_points = np.array([[x, y, 0.] for _, x, y in sorted_markers], dtype='double')
-    obj_points = np.array([pattern[idx][0:2] + [0.]  for idx, _, _ in sorted_markers], dtype='double')
-
-    H, _ = cv2.findHomography(img_points, obj_points, method=cv2.RANSAC)
     return H
 
 
-def find_corresponding_points(vec) -> list:
+def get_projection_matrix(image: np.ndarray, markers: list, pattern: dict, vis: bool=False) -> np.ndarray:
+    indexed_markers = [(0, x, y) for x, y, _ in markers]
+    sorted_markers = find_corresponding_points(indexed_markers)
+    
+    img_points = np.array([[x, y] for _, x, y in sorted_markers], dtype='double')
+    obj_points = np.array([pattern[idx][0:3]  for idx, _, _ in sorted_markers], dtype='double')
+    
+    r_mat, t_vec = find_camera_position(img_points, obj_points, K_DEFAULT)
+    P = compute_projection_matrix(r_mat, t_vec, K_DEFAULT)
+    return P
+
+
+def find_corresponding_points(vec: list) -> list:
     """Sort points based on marker shape"""
     pairs = []
     r2_vec = []
@@ -363,7 +320,24 @@ def check_first_pair_side(intersection, separate, z_first, z_second) -> bool:
             return False
 
 
-def detect_markers(image: np.ndarray, config: dict) -> list:
+def find_camera_position(img_points: list, obj_points: list, K: np.ndarray) -> tuple:
+    img_points = np.float32(img_points)
+    obj_points = np.float32(obj_points)
+
+    # Assume no camera distortion
+    dist_coeffs = np.zeros((4,1))
+    
+    success, r_vec, t_vec = cv2.solvePnP(obj_points, img_points, K, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
+    r_vec, t_vec = cv2.solvePnPRefineVVS(obj_points, img_points, K, dist_coeffs, r_vec, t_vec)
+    r_mat = cv2.Rodrigues(r_vec)[0]
+    return r_mat, t_vec
+
+
+def compute_projection_matrix(r_mat: np.ndarray, t_vec: np.ndarray, K: np.ndarray) -> np.ndarray:
+    return K @ np.hstack([r_mat, t_vec])
+
+
+def detect_by_markers(image: np.ndarray, config: dict) -> list:
     """ Detect markers on the image """
     
     binary_threshold = config["BIN_THR"]
@@ -374,16 +348,12 @@ def detect_markers(image: np.ndarray, config: dict) -> list:
     area_threshold   = config["AREA_THR"]
     
     height, width = image.shape[0], image.shape[1]
-    # gimage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     _, binary_image = cv2.threshold(image, binary_threshold, 255, cv2.THRESH_BINARY) # +cv2.THRESH_OTSU
+    # _, binary_image = cv2.threshold(gimg, 0, 63, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
     
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size,kernel_size))
     morph_image = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
-    
-    # morph_image = binary_image
-    
-    # _, binary_image = cv2.threshold(gimg, 0, 40, cv2.THRESH_BINARY+cv2.THRESH_OTSU) # +cv2.THRESH_OTSU
     # morph_image = binary_image
 
     connectivity = 8
@@ -398,14 +368,29 @@ def detect_markers(image: np.ndarray, config: dict) -> list:
         m_area   = stats[idx, cv2.CC_STAT_AREA]
         m_circularity = np.pi * m_radius**2/(m_area)
 
-        # if (m_area >= area_threshold and 
-        #     m_circularity > circ_threshold and 
-        #     abs(m_width - m_height) <= w_h_difference and
-        #     m_xi-marker_size >= 0 and m_xi+marker_size <= width and
-        #     m_yi-marker_size >= 0 and m_yi+marker_size <= height):
+        if (m_area >= area_threshold and 
+            m_circularity > circ_threshold and 
+            abs(m_width - m_height) <= w_h_difference and
+            m_xi-marker_size >= 0 and m_xi+marker_size <= width and
+            m_yi-marker_size >= 0 and m_yi+marker_size <= height):
 
-        #     objs.append([*centroids[idx], m_radius])
+            objs.append([*centroids[idx], m_radius])
         
-        objs.append([*centroids[idx], m_radius])
+        # objs.append([*centroids[idx], m_radius])
     
     return objs
+
+
+def n_view_traingulation(P_vec, img_points) -> np.ndarray:
+    create_row = lambda u, v, P : np.vstack(( u*P[2,:]-P[0,:],
+                                              v*P[2,:]-P[1,:]))
+
+    A = np.vstack([create_row(u,v,P) for (u, v), P  in zip(img_points, P_vec)])
+    
+    # Solve the A*X = 0 using SVD
+    u, s, vh = np.linalg.svd(A)
+    X = vh[-1,:]
+    X = X/X[-1]
+    X = X[:-1]
+
+    return X
