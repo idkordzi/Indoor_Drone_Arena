@@ -129,7 +129,7 @@ def new_process_send_all(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        if first_iter_flag and detection_method == "FOREGROUND":
+        if detection_method == "FOREGROUND" and first_iter_flag:
             background = frame.copy()
             first_iter_flag = False
         objs = detection_function(frame)
