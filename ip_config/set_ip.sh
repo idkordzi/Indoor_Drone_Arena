@@ -1,1 +1,1 @@
-~/ws/static/set_static.sh 192.168.1.127 255.255.255.0 192.168.1.1 /etc/network/interfaces.d/interfaces;
+~/ws/Indoor_Drone_Arena/set_static.sh 192.168.$1.$2 255.255.255.0 192.168.$1.1 /etc/network/interfaces.d/interfaces;

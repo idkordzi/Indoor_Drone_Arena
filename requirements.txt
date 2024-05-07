@@ -1,5 +1,7 @@
 pyyaml
 numpy
 opencv-python
+matplotlib
+scikit-learn
 zmq
 pypylon

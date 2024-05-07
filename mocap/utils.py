@@ -380,6 +380,69 @@ def detect_by_markers(image: np.ndarray, config: dict) -> list:
     
     return objs
 
+def detect_by_foreground(image: np.ndarray, config: dict, 
+                         machine: cv2.BackgroundSubtractorMOG2=None, 
+                         background: np.ndarray=None ,
+                         foreground_mask: np.ndarray=None) -> list:
+    """ Detect markers on the image """
+    
+    binary_threshold = config["BIN_THR"]
+    blur_size = config["B_SIZE"]
+    kernel_size = config["K_SIZE"]
+    alpha = config["ALPHA"]
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size*1, kernel_size*2))
+    
+    height, width = image.shape[0], image.shape[1]
+    
+    # background = machine.apply(image)
+    # binary = ((background > 0) * 255).astype(np.uint8)
+    # blurred = cv2.medianBlur(binary, blur_size)
+    # imgMrp = cv2.erode(blurred, kernel)
+    # imgMrp = cv2.dilate(imgMrp, kernel)
+    # imgMrp = cv2.medianBlur(imgMrp, blur_size)
+    
+    
+    
+    background = ( background + (background < image) - (background > image) )
+    # background[foreground_mask] = ( alpha*image.astype(np.float64) + (1-alpha)*background.astype(np.float64) )[foreground_mask]
+    # background[foreground_mask] = ( background + (background < image) - (background > image) )[foreground_mask]
+    
+    background = background.astype(np.uint8)
+    difference = np.abs(image.astype('int') - background.astype('int'))
+    binary = ((1 * (difference > binary_threshold)) * 255).astype(np.uint8)
+    blurred = cv2.medianBlur(binary, blur_size)
+    imgMrp = cv2.erode(blurred, kernel)
+    imgMrp = cv2.dilate(imgMrp, kernel)
+    imgMrp = cv2.medianBlur(imgMrp, blur_size)
+    foreground_mask = (imgMrp < 1)
+    
+    # cv2.imshow("debug", cv2.resize(imgMrp, None, fx=0.5, fy=0.5))
+
+    connectivity = 8
+    num_labels, _, stats, centroids =  cv2.connectedComponentsWithStats(blurred, connectivity, cv2.CV_32S)
+    objs = []
+    
+    for idx in range(1, num_labels):
+        m_xi, m_yi = centroids[idx]
+        m_width  = stats[idx, cv2.CC_STAT_WIDTH]
+        m_height = stats[idx, cv2.CC_STAT_HEIGHT]
+        m_radius = (m_width + m_height) / 4
+        m_area   = stats[idx, cv2.CC_STAT_AREA]
+        m_circularity = np.pi * m_radius**2/(m_area)
+
+        # if (m_area >= area_threshold and 
+        #     m_circularity > circ_threshold and 
+        #     abs(m_width - m_height) <= w_h_difference and
+        #     m_xi-marker_size >= 0 and m_xi+marker_size <= width and
+        #     m_yi-marker_size >= 0 and m_yi+marker_size <= height):
+
+        objs.append([*centroids[idx], m_area])
+        
+        # objs.append([*centroids[idx], m_radius])
+    
+    return objs
+
 
 def n_view_traingulation(P_vec, img_points) -> np.ndarray:
     create_row = lambda u, v, P : np.vstack(( u*P[2,:]-P[0,:],
