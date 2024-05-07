@@ -129,7 +129,7 @@ def new_process_send_all(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        if first_iter_flag:
+        if first_iter_flag and detection_method == "FOREGROUND":
             background = frame.copy()
             first_iter_flag = False
         objs = detection_function(frame)
@@ -288,7 +288,7 @@ def new_process_calculate_projection_matrix(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        objs = detect_by_markers(frame, config["DETECTION"]["BY_MARKERS"])
+        objs = detect_by_markers(frame, config["DETECTION"]["MARKERS"])
         flag_en = (len(objs) == PATTERN_PNB)
         if flag_en:
             indexed_markers = [(0, x, y) for x, y, _ in objs]
