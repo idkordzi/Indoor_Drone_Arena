@@ -5,7 +5,7 @@ if __name__ == "__main__":
                                      "edge devices")
     parser.add_argument("-n", "--network", type=int, choices=[0, 1], default=1,
                         help="Indicates connection to network")
-    parser.add_argument("-m", "--mode", type=int, choices=[0, 1, 2, 3], default=0,
+    parser.add_argument("-d", "--detection", type=int, choices=[0, 1, 2, 3], default=0,
                         help="Work mode: 0 - stops server; 1 - receive frames; "
                         "2 - receive detections, 3 - receive both frames and detections")
     parser.add_argument("-l", "--listen", type=int, choices=[0, 1], default=0,
@@ -20,8 +20,8 @@ if __name__ == "__main__":
     print("MAIN: Start program")
     if args.listen == 1:
         server.listen()
-    elif args.mode != 0:
-        server.run(args.mode)
+    elif args.detection != 0:
+        server.run(args.detection)
         input("Press any key to finish\n")
         server.stop()
     print("MAIN: Stop program")

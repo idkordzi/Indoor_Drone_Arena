@@ -128,6 +128,7 @@ def new_thread_run_stream(
     shared_frame_np     = np.frombuffer(shared_memory[0].get_obj(), dtype=np.uint8)
     shared_points_np    = np.frombuffer(shared_memory[1].get_obj(), dtype=np.float32)
     shared_points_nb_np = np.frombuffer(shared_memory[2].get_obj(), dtype=np.uint8)
+    shared_camera_id_np = np.frombuffer(shared_memory[3].get_obj(), dtype=np.uint8)
     
     pubs_addrs = [f"{ip_addr}:{p}" for p in ip_ports]
     print(f"Server::SUBPROCESS::THREAD::run_stream(): Start receiving from {pubs_addrs}")
@@ -140,7 +141,7 @@ def new_thread_run_stream(
         ready_flag.clear()
         success_0, msg_0, data_0 = stream_0.receive(timeout=timeout)
         success_1, msg_1, data_1 = stream_1.receive(timeout=timeout)
-        if not (success_0 and success_1):
+        if not (success_0 and success_1) or (msg_0 is None and msg_1 is None):
             print(f"Server::SUBPROCESS::THREAD::run_stream()::ERROR: Cannot read from [{ip_addr}]")
             print(f"Server::SUBPROCESS::THREAD::run_stream()::INFO: "
                   f"Stream for [{ip_addr}] will kill the process")
@@ -155,11 +156,17 @@ def new_thread_run_stream(
             # print(shared_frame_np)
         
         if msg_1 is not None:
+            points_pkg = data_1.copy()
+            points_pkg_size = points_pkg.shape
             with shared_memory[1].get_lock(), shared_memory[2].get_lock():
-                points_pkg = data_1.copy()
-                points_pkg_size = points_pkg.shape
                 shared_points_np[:points_pkg_size[0]*3] = points_pkg.flatten()
                 shared_points_nb_np[0] = np.uint8(points_pkg_size[0])
+        
+        if msg_0 is None: msg_0 = msg_1
+        camera_id = int(msg_0.split(".")[-1])
+        with shared_memory[3].get_lock():
+            shared_camera_id_np[0] = np.uint8(camera_id)
+        
         ready_flag.set()
     stream_0.close()
     stream_1.close()
@@ -179,13 +186,14 @@ def new_process_start_processing(
     
     flag_wait = False
     streams_nb = len(shared_memory)
-    local_mem = [[[], [], []] for _ in range(streams_nb)]
+    local_mem = [[[], [], [], []] for _ in range(streams_nb)]
     memory_handle = []
     for i in range(streams_nb):
         frame_np     = np.reshape(np.frombuffer(shared_memory[i][0].get_obj(), dtype=np.uint8), (1080, 1440))
         points_np    = np.frombuffer(shared_memory[i][1].get_obj(), dtype=np.float32)
         points_nb_np = np.frombuffer(shared_memory[i][2].get_obj(), dtype=np.uint8)
-        memory_handle.append([frame_np, points_np, points_nb_np])
+        cam_id_np    = np.frombuffer(shared_memory[i][3].get_obj(), dtype=np.uint8)
+        memory_handle.append([frame_np, points_np, points_nb_np, cam_id_np])
     
     # Load H matrixes
     if estimation_mode == 1:
@@ -212,6 +220,9 @@ def new_process_start_processing(
     # plist = []
     pose = [0.,0.,0.]
     point_av = False
+    
+    cv2.namedWindow("cameras")
+    cv2.namedWindow("detections")
     
     # pos = np.array([[0,0,0]])
     # fig = plt.figure()
@@ -254,117 +265,120 @@ def new_process_start_processing(
             continue
         elif status == "OK":
             for i in range(streams_nb):
-                with shared_memory[i][0].get_lock(), shared_memory[i][1].get_lock(), shared_memory[i][2].get_lock():
-                    local_mem[i][0] = memory_handle[i][0].copy()
-                    local_mem[i][1] = memory_handle[i][1].copy()
-                    local_mem[i][2] = memory_handle[i][2].copy()
+                with shared_memory[i][0].get_lock():
+                    local_mem[i][0] = np.reshape(memory_handle[i][0].copy(), (1080, 1440))
+                
+                with shared_memory[i][1].get_lock(), shared_memory[i][2].get_lock():
+                    local_mem[i][2] = memory_handle[i][2][0]
+                    off = local_mem[i][2]
+                    local_mem[i][1] = np.reshape(memory_handle[i][1][:off*3], (off, 3))
+                
+                with shared_memory[i][3].get_lock():
+                    local_mem[i][3] = memory_handle[i][3][0]
+                    
             data_read_in.send("OK")
             status = "WORK"
             continue
         elif status == "WORK":
             
             
-            # heh
+            # DEBUG
             # time.sleep(0.2)
-            
             # status = "WAIT"
             # data_read_in.send("WAIT")
             # continue
 
             t1 = time.perf_counter()
             
-            # if receive_mode == 1 or receive_mode == 2:
+            if receive_mode == 2 or receive_mode == 3:
                 
-            #     # Case 1.: Use homography matrixes to estimate pattern position in fixed plane
-            #     if estimation_mode == 0:
-            #         estim_points = []
-            #         final_points = []
-            #         for i in range(streams_nb):
-            #             msg = local_mem[i][0]
-            #             cid = int(msg.split('.')[-1])
-            #             img_p = local_mem[i][1].copy()
-            #             if len(img_p) != PATTERN_PNB:
-            #                 continue
-            #             img_p_asl = [(0, x, y) for x, y, r in img_p]
-            #             srt_p = find_corresponding_points(img_p_asl)
+                # Case 1.: Use homography matrixes to estimate pattern position in fixed plane
+                if estimation_mode == 0:
+                    estim_points = []
+                    final_points = []
+                    for i in range(streams_nb):
+                        cid = local_mem[i][3]
+                        img_p = local_mem[i][1].copy()
+                        if len(img_p) != PATTERN_PNB:
+                            continue
+                        img_p_asl = [(0, x, y) for x, y, r in img_p]
+                        srt_p = find_corresponding_points(img_p_asl)
                         
-            #             # Case 1.1.: Recive raw points from detectin
-            #             est_p = []
-            #             for pi in srt_p:
-            #                 ei = np.dot(H_matrixes[cid], np.append(pi[1:], [1]).transpose())
-            #                 ei = ei / ei[-1]
-            #                 est_p.append(ei[0:2])
-            #             estim_points.append(est_p)
+                        # Case 1.1.: Recive raw points from detectin
+                        est_p = []
+                        for pi in srt_p:
+                            ei = np.dot(H_matrixes[cid], np.append(pi[1:], [1]).transpose())
+                            ei = ei / ei[-1]
+                            est_p.append(ei[0:2])
+                        estim_points.append(est_p)
                             
-            #             # # Case 1.2.: Recive points after projection
-            #             # estim_points.append(srt_p)
+                        # # Case 1.2.: Recive points after projection
+                        # estim_points.append(srt_p)
                         
-            #         final_points = np.mean(np.array(estim_points), axis=0)
-            #         for i in range(PATTERN_PNB):
-            #             print(f"{i+1}: {final_points[i, 0]:7.4f} {final_points[i, 1]:7.4f}, ", end="")
-            #         print("")
+                    final_points = np.mean(np.array(estim_points), axis=0)
+                    for i in range(PATTERN_PNB):
+                        print(f"{i+1}: {final_points[i, 0]:7.4f} {final_points[i, 1]:7.4f}, ", end="")
+                    print("")
                 
-            #     # Case 2.: Use projection matrixes to estimate pattern position in space
-            #     elif estimation_mode == 1:
+                # Case 2.: Use projection matrixes to estimate pattern position in space
+                elif estimation_mode == 1:
                     
-            #         break_flag = False
+                    break_flag = False
                     
-            #         sorted_points = {}
-            #         final_points = []
-            #         for i in range(streams_nb):
+                    sorted_points = {}
+                    final_points = []
+                    for i in range(streams_nb):
                         
-            #             msg = local_mem[i][0]
-            #             cid = int(msg.split('.')[-1])
-            #             img_p = local_mem[i][2].copy()
+                        cid = local_mem[i][3]
+                        img_p = local_mem[i][1].copy()
                         
-            #             if img_p.shape[0] < 1:
-            #                 break_flag = True
-            #                 break
+                        if img_p.shape[0] < 1:
+                            break_flag = True
+                            break
                         
-            #             sorted_points[cid] = [(0, img_p[0,0], img_p[0,1])]
-            #             continue
+                        sorted_points[cid] = [(0, img_p[0,0], img_p[0,1])]
+                        continue
                         
-            #             msg = local_mem[i][0]
-            #             cid = int(msg.split('.')[-1])
-            #             img_p = local_mem[i][1].copy()
-            #             if len(img_p) != PATTERN_PNB:
-            #                 continue
-            #             img_p_asl = [(0, x, y) for x, y, r in img_p]
-            #             srt_p = find_corresponding_points(img_p_asl)
-            #             sorted_points[cid] = srt_p
-            #         # print(f"Server:THREAD::run_processing: Usable packages: {len(sorted_points)}")
-            #         # for pi in range(PATTERN_PNB):
-            #         #     p_coors = []
-            #         #     for ci in sorted_points.keys():
-            #         #         p_coors.append(sorted_points[ci][pi][1:3])
-            #         #     final_points.append(n_view_traingulation(P_vector, p_coors))
+                        img_p = local_mem[i][1].copy()
+                        if len(img_p) != PATTERN_PNB:
+                            continue
+                        img_p_asl = [(0, x, y) for x, y, r in img_p]
+                        srt_p = find_corresponding_points(img_p_asl)
+                        sorted_points[cid] = srt_p
                     
-            #         if not break_flag:
+                    # print(f"Server:THREAD::run_processing: Usable packages: {len(sorted_points)}")
+                    # for pi in range(PATTERN_PNB):
+                    #     p_coors = []
+                    #     for ci in sorted_points.keys():
+                    #         p_coors.append(sorted_points[ci][pi][1:3])
+                    #     final_points.append(n_view_traingulation(P_vector, p_coors))
                     
-            #             p_coors = []
-            #             for ci in sorted_points.keys(): 
-            #                 p_coors.append(sorted_points[ci][0][1:3])
-            #             final_points.append(n_view_traingulation(P_vector, p_coors))
-            #             # print(f"{0}: {final_points[0][0]:7.3f} {final_points[0][1]:7.3f} {final_points[0][2]:7.3f}, ", end="\n")
+                    if not break_flag:
+                    
+                        p_coors = []
+                        for ci in sorted_points.keys(): 
+                            p_coors.append(sorted_points[ci][0][1:3])
+                        final_points.append(n_view_traingulation(P_vector, p_coors))
+                        # print(f"{0}: {final_points[0][0]:7.3f} {final_points[0][1]:7.3f} {final_points[0][2]:7.3f}, ", end="\n")
                         
-            #             if len(final_points[0]) != 3:
-            #                 point_av = False
-            #             else:
-            #                 point_av = True
-            #                 pose[0] = final_points[0][0]
-            #                 pose[1] = final_points[0][1]
-            #                 pose[2] = final_points[0][2]
+                        if len(final_points[0]) != 3:
+                            point_av = False
+                        else:
+                            point_av = True
+                            pose[0] = final_points[0][0]
+                            pose[1] = final_points[0][1]
+                            pose[2] = final_points[0][2]
                     
-            #         else:
-            #             # print(f"Server:THREAD::run_processing::WARNING: No points detected")
-            #             point_av = False
+                    else:
+                        # print(f"Server:THREAD::run_processing::WARNING: No points detected")
+                        point_av = False
                     
-            #         # print(f"PKGS: [{len(sorted_points):1d}] {list(sorted_points.keys())} PTS: [{PATTERN_PNB:1d}] ", end="")
-            #         # for i in range(PATTERN_PNB):
-            #         #     print(f"{i+1}: {final_points[i][0]:7.3f} {final_points[i][1]:7.3f} {final_points[i][2]:7.3f}, ", end="")
-            #         # print("")
+                    # print(f"PKGS: [{len(sorted_points):1d}] {list(sorted_points.keys())} PTS: [{PATTERN_PNB:1d}] ", end="")
+                    # for i in range(PATTERN_PNB):
+                    #     print(f"{i+1}: {final_points[i][0]:7.3f} {final_points[i][1]:7.3f} {final_points[i][2]:7.3f}, ", end="")
+                    # print("")
                 
-            #     pass
+                pass
             
             t2 = time.perf_counter()
             # print(f"Server:THREAD::run_processing: RECV: [{t1-t0:.06f}] PROC: [{t2-t1:.6f}] [s]")
@@ -379,7 +393,7 @@ def new_process_start_processing(
                     ih = (idx // 2)
                     iw = (idx % 2)
                     blank[ih*off_h:(ih+1)*off_h, iw*off_w:(iw+1)*off_w] = cv2.resize(pkg[0], (off_w, off_h))
-                    cv2.putText(blank, f"PKG IDX {idx}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                    cv2.putText(blank, f"CAMERA ID {pkg[3]}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
                 # cv2.imshow(pkg[0], cv2.resize(pkg[1], (480, 360)))
                 cv2.imshow("cameras", blank)
                 
@@ -408,7 +422,7 @@ def new_process_start_processing(
                 txt = ""
                 blank = np.zeros((160,1080), dtype=np.uint8)
                 for i, pkg in enumerate(local_mem):
-                    txt = f"From [{pkg[0]}] received: [{pkg[1].shape}] {pkg[1].flatten()}"
+                    txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
                     cv2.putText(blank, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
                 
                 # if cnt == 0: av_time = t1-t0
@@ -423,8 +437,8 @@ def new_process_start_processing(
             
             elif receive_mode == 3:
                 
-                pos_c = (np.random.rand(1,3) - 0.5).astype(np.float32)
-                pose += pos_c
+                # pos_c = (np.random.rand(1,3) - 0.5).astype(np.float32)
+                # pose += pos_c
                 
                 off_h = 360
                 off_w = 480
@@ -432,23 +446,23 @@ def new_process_start_processing(
                 for idx, pkg in enumerate(local_mem):
                     ih = (idx // 2)
                     iw = (idx % 2)
-                    for i in [0,1,2]: blank[ih*off_h:(ih+1)*off_h, iw*off_w:(iw+1)*off_w, i] = cv2.resize(pkg[1], (off_w, off_h))
-                    pt_len = pkg[2].shape[0]
+                    for i in [0,1,2]: blank[ih*off_h:(ih+1)*off_h, iw*off_w:(iw+1)*off_w, i] = cv2.resize(pkg[0], (off_w, off_h))
+                    pt_len = pkg[2]
                     for i in range(pt_len):
-                        x = pkg[2][i, 0]
-                        y = pkg[2][i, 1]
+                        x = pkg[1][i, 0]
+                        y = pkg[1][i, 1]
                         
                         x = int(x / 1440 * off_w) + iw*off_w
                         y = int(y / 1080 * off_h) + ih*off_h
                         
                         cv2.circle(blank, (int(x), int(y)), int(4), (0,0,255), 2)
-                    cv2.putText(blank, f"CAM ID {pkg[0]}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                    cv2.putText(blank, f"CAM ID {pkg[3]}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
                 cv2.imshow("cameras", blank)
                 
                 txt = ""
                 board = np.zeros((180,1080), dtype=np.uint8)
                 for i, pkg in enumerate(local_mem):
-                    txt = f"From [{pkg[0]}] received: [{pkg[2].shape}] {pkg[2].flatten()}"
+                    txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
                     cv2.putText(board, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
                 
                 if cnt == 0: av_time = t2-t1
@@ -473,3 +487,7 @@ def new_process_start_processing(
             status = "WAIT"
             data_read_in.send("WAIT")
             continue
+    
+    # DEBUG
+    cv2.destroyWindow("cameras")
+    cv2.destroyWindow("detections")

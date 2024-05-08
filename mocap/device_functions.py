@@ -116,6 +116,7 @@ def new_process_send_all(
                                                                 machine=None, 
                                                                 background=background, 
                                                                 foreground_mask=foreground_mask)
+    detection_limit = config["DETECTION"].get("MAX_DETECTIONS", 10)
     
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
     pub_port_img = config["PUBLISHERS"]["PORT_IMG"][0]
@@ -129,21 +130,27 @@ def new_process_send_all(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
+        
         if detection_method == "FOREGROUND" and first_iter_flag:
             background = frame.copy()
             first_iter_flag = False
-        objs = detection_function(frame)
         
-        i = 1
-        x_g = 0
-        y_g = 0
-        for x, y, a in objs:
-            x_g += x * a
-            y_g += y * a
-            i += a
-        x_g = int(x_g / i)
-        y_g = int(y_g / i)
-        objs = [[x_g, y_g, 0]]
+        objs = detection_function(frame)
+        if len(objs) > detection_limit:
+            objs = objs[:detection_limit]
+        
+        if detection_method == "FOREGROUND":
+            i = 1
+            x_g = 0
+            y_g = 0
+            for x, y, a in objs:
+                x_g += x * a
+                y_g += y * a
+                i += a
+            x_g = int(x_g / i)
+            y_g = int(y_g / i)
+            objs = [[x_g, y_g, 0]]
+        
         # blank = np.concatenate([frame[:,:,None], frame[:,:,None], frame[:,:,None]], axis=-1)
         # cv2.circle(blank, (x_g, y_g), int(4), (0,0,255), 6)
         # cv2.imshow("detection", cv2.resize(blank, None, fx=0.5, fy=0.5))

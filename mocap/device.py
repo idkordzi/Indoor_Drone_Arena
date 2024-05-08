@@ -19,7 +19,7 @@ from .device_functions import (
 
 class MocapCamera():
     
-    def __init__(self, config_file: str, network_connected: bool=True):
+    def __init__(self, config_file: str, network_connected: bool=True, detection_method: int=1):
         
         # Read configuration file
         self.config = read_config(config_file)
@@ -58,8 +58,14 @@ class MocapCamera():
         self.blocked = False
         self.process = None
         
-        # Get detection method
-        self.detection_mode = self.config["DETECTION"].get("METHOD", "MARKERS")
+        # Get detection method # @TODO need fix
+        # detection_mode = self.config["DETECTION"].get("METHOD", "MARKERS")
+        if detection_method == 1:
+            self.detection_mode = "MARKERS"
+        elif detection_method == 2:
+            self.detection_mode = "FOREGROUND"
+        self.config["DETECTION"]["METHOD"] = self.detection_mode
+        
     
     def listen(self):
         raise NotImplementedError()

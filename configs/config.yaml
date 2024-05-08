@@ -20,7 +20,8 @@ CONTROLLER:
 # List of publishers IPs
 PUBLISHERS:
     # IP: ["127.0.0.1"]
-    IP: ["192.168.0.127", "192.168.0.135", "192.168.0.143", "192.168.0.151"]
+    IP: ["192.168.128.47"]
+    # IP: ["192.168.0.127", "192.168.0.135", "192.168.0.143", "192.168.0.151"]
     PORT_IMG: ["5550"]
     PORT_PTS: ["5555"]
 
@@ -35,7 +36,7 @@ CAMERA:
 # Detection config
 DETECTION:
     MAX_DETECTIONS: 10
-    METHOD: "FOREGROUND"
+    METHOD: "MARKERS"
     MARKERS:
         BIN_THR: 180 # 180
         K_SIZE: 21 # 21

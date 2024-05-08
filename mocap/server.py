@@ -41,7 +41,8 @@ class Server():
             stream_mem = [
                 Array(ctypes.c_ubyte, self.im_width * self.im_height),
                 Array(ctypes.c_float, self.max_detections * 3),
-                Array(ctypes.c_uint8, 1)
+                Array(ctypes.c_uint8, 1),
+                Array(ctypes.c_uint8, 1),
             ]
             self.shared_memory.append(stream_mem)
         
