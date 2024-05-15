@@ -380,10 +380,14 @@ def detect_by_markers(image: np.ndarray, config: dict) -> list:
     
     return objs
 
-def detect_by_foreground(image: np.ndarray, config: dict, 
-                         machine: cv2.BackgroundSubtractorMOG2=None, 
-                         background: np.ndarray=None ,
-                         foreground_mask: np.ndarray=None) -> list:
+def detect_by_foreground(
+    image: np.ndarray,
+    config: dict, 
+    machine: cv2.BackgroundSubtractorMOG2=None, 
+    background: np.ndarray=None ,
+    foreground_mask: np.ndarray=None
+) -> list:
+    
     """ Detect markers on the image """
     
     binary_threshold = config["BIN_THR"]
@@ -417,7 +421,7 @@ def detect_by_foreground(image: np.ndarray, config: dict,
     imgMrp = cv2.medianBlur(imgMrp, blur_size)
     foreground_mask = (imgMrp < 1)
     
-    # cv2.imshow("debug", cv2.resize(imgMrp, None, fx=0.5, fy=0.5))
+    
 
     connectivity = 8
     num_labels, _, stats, centroids =  cv2.connectedComponentsWithStats(blurred, connectivity, cv2.CV_32S)
@@ -441,7 +445,7 @@ def detect_by_foreground(image: np.ndarray, config: dict,
         
         # objs.append([*centroids[idx], m_radius])
     
-    return objs
+    return objs, imgMrp
 
 
 def n_view_traingulation(P_vec, img_points) -> np.ndarray:

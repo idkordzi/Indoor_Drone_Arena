@@ -138,33 +138,35 @@ class MocapCamera():
         self.process.start()
     
     def _setup_camera(self):
-        external_trigger = self.config["CAMERA"].get("TRIGGER", False) 
-        if external_trigger:
-            # self.camera.LineSelector.SetValue("Line3")
-            # self.camera.LineMode.SetValue("Input")
-            # self.camera.TriggerSelector.SetValue("FrameStart")
-            # self.camera.TriggerActivation.SetValue("RisingEdge")
-            self.camera.TriggerMode.SetValue("On")
-            self.camera.TriggerSource.SetValue("Line3")
-        else:
-            fps = self.config["CAMERA"].get("FPS", 30)
-            self.camera.AcquisitionFrameRateEnable.SetValue(True)
-            self.camera.AcquisitionFrameRate.SetValue(fps)
-        exposure_time = self.config["CAMERA"].get("EXPOSURE", 10000.0)
-        self.camera.ExposureTime.SetValue(exposure_time)
-        self.camera.PixelFormat.SetValue("Mono8")
         
-        if external_trigger: 
-            self.camera.RegisterConfiguration(
-                pylon.SoftwareTriggerConfiguration(),
-                pylon.RegistrationMode_ReplaceAll,
-                pylon.Cleanup_Delete,
-            )
+        # if external_trigger: 
+        self.camera.RegisterConfiguration(
+            pylon.SoftwareTriggerConfiguration(),
+            pylon.RegistrationMode_ReplaceAll,
+            pylon.Cleanup_Delete,
+        )
         self.camera.RegisterImageEventHandler(
             SampleImageEventHandler(self.camera_pipe[0], self.shared_memory, self.im_width, self.im_height), 
             pylon.RegistrationMode_Append,
             pylon.Cleanup_Delete,
         )
+        
+        external_trigger = self.config["CAMERA"].get("TRIGGER", False) 
+        if external_trigger:
+            # self.camera.LineSelector.SetValue("Line3")
+            # self.camera.LineMode.SetValue("Input")
+            self.camera.TriggerSelector.SetValue("FrameStart")
+            self.camera.TriggerSource.SetValue("Line3")
+            self.camera.TriggerMode.SetValue("On")
+            self.camera.TriggerActivation.SetValue("RisingEdge")
+        else:
+            fps = self.config["CAMERA"].get("FPS", 30)
+            self.camera.AcquisitionFrameRateEnable.SetValue(True)
+            self.camera.AcquisitionFrameRate.SetValue(fps)
+        exposure_time = self.config["CAMERA"].get("EXPOSURE", 6000.0)
+        self.camera.ExposureTime.SetValue(exposure_time)
+        self.camera.PixelFormat.SetValue("Mono8")
+        self.camera.MaxNumBuffer.SetValue(10)
     
     def _start_camera(self):
         self.camera.StartGrabbing(

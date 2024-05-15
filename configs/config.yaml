@@ -7,28 +7,27 @@ SERVER:
 # Edge device config
 DEVICE:
     DIR: "device"
-    NB: 100
+    NB: 1000
     STEP: 1
     CLEAR: True
 
 # Controller config
 CONTROLLER:
     # IP: ["127.0.0.1"]
-    IP: ["192.168.50.119"]
+    IP: ["192.168.0.119"]
     PORT: ["4000"]
 
 # List of publishers IPs
 PUBLISHERS:
     # IP: ["127.0.0.1"]
-    IP: ["192.168.128.47"]
-    # IP: ["192.168.0.127", "192.168.0.135", "192.168.0.143", "192.168.0.151"]
+    IP: ["192.168.0.127", "192.168.0.135", "192.168.0.143", "192.168.0.151"]
     PORT_IMG: ["5550"]
     PORT_PTS: ["5555"]
 
 # Camera config
 CAMERA:
     FPS: 60
-    EXPOSURE: 10000
+    EXPOSURE: 6000
     TRIGGER: False # True
     IM_WIDTH: 1440
     IM_HEIGHT: 1080
@@ -36,14 +35,13 @@ CAMERA:
 # Detection config
 DETECTION:
     MAX_DETECTIONS: 10
-    METHOD: "MARKERS"
     MARKERS:
-        BIN_THR: 180 # 180
-        K_SIZE: 21 # 21
+        BIN_THR: 180  # 180
+        K_SIZE: 21    # 21
         CIRC_THR: 0.2 # 0.8
-        W_H_DIFF: 20 # 20
+        W_H_DIFF: 20  # 20
         MARK_SIZE: 50 # 100
-        AREA_THR: 1 # 80
+        AREA_THR: 1   # 80
     FOREGROUND:
         BIN_THR: 30
         B_SIZE: 21
