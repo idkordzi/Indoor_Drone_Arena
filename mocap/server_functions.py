@@ -6,7 +6,11 @@ from copy import copy
 import cv2
 import numpy as np
 
-from .header import CAMERA_IDS, PATTERN_PNB
+# from functools import partial
+# import matplotlib.pyplot as plt
+# import matplotlib.animation as anm
+
+from .header import PATTERN_PNB
 from .utils import VideoStreamSubscriber, find_corresponding_points, n_view_traingulation
 
 
@@ -57,18 +61,19 @@ def new_process_start_receiving(
         data_ready_in.send("STOP")
     
     # Main loop
-    status = "OK"
     flag_skip = False
     wait_time = 0.01
     start_flag.set()
     time.sleep(wait_time) # so subthreads could start first iteration
+    status = "IDLE"
     while True:
         if data_read_out.poll():
             status = data_read_out.recv()
             
         # print(f"Server::SUBPROCESS::new_process_start_receiving()::DEBUG: Status [{status}]")
         # time.sleep(0.5)
-            
+        
+        # stop receiving data
         if status == "STOP":
             print(f"Server::SUBPROCESS::new_process_start_receiving()::INFO: Status [{status}]")
             data_ready_in.send("STOP")
@@ -76,28 +81,34 @@ def new_process_start_receiving(
             kill_flag.set()
             break
         
-        if kill_flag.is_set(): # one of the subthreads requested trminating process
+        if kill_flag.is_set(): # one of the subthreads requested terminating the process
             status = "STOP"
             continue
         
+        # wait for parallel process to copy data from shared memory
         if status == "WAIT":
             start_flag.clear()
+            
             flag_skip = False
             for ev in ready_flags:
                 if not ev.is_set(): flag_skip = True
             if flag_skip: continue
+            
             # flag_wait = True
             # while flag_wait:
             #     flag_wait = False
             #     for ev in ready_flags:
             #         if not ev.is_set():
             #             flag_wait = True
+            
             data_ready_in.send("OK")
-            status = "IDLE"
+            status = "OK"
             continue
+        
         if status == "OK":
             start_flag.set()
             time.sleep(wait_time)
+            status = "IDLE"
 
 
 def new_thread_run_stream(
@@ -174,6 +185,7 @@ def new_thread_run_stream(
         # print(f"Server::SUBPROCESS::THREAD::run_stream()::INFO: Received fomr [{camera_id}]")
         
         ready_flag.set()
+    
     stream_0.close()
     stream_1.close()
     
@@ -201,10 +213,14 @@ def new_process_start_processing(
         cam_id_np    = np.frombuffer(shared_memory[i][3].get_obj(), dtype=np.uint8)
         memory_handle.append([frame_np, points_np, points_nb_np, cam_id_np])
     
+    camera_ids = [ip.split(".")[-1] for ip in config["PUBLISHERS"]["IP"]]
+    im_width   = config["CAMERA"]["WIDTH"]
+    im_height  = config["CAMERA"]["HEIGHT"]
+    
     # Load H matrixes
     if estimation_mode == 1:
         H_matrixes = {}
-        for idx in CAMERA_IDS:
+        for idx in camera_ids:
             mat = np.load(f"device/H_{idx}.npy")
             H_matrixes[idx] = mat.copy()
     
@@ -212,7 +228,7 @@ def new_process_start_processing(
     elif estimation_mode == 2:
         P_matrixes = {}
         P_vector = []
-        for idx in CAMERA_IDS:
+        for idx in camera_ids:
             mat = np.load(f"device/P_{idx}.npy")
             P_matrixes[idx] = mat.copy()
             P_vector.append(mat.copy())
@@ -223,12 +239,14 @@ def new_process_start_processing(
     av_time = 0.
     # sq = np.ceil(np.sqrt(streams_nb), dtype=int)
     # bg = np.zeros((360*sq, 480*sq), dtype=np.uint8)
-    plist = []
     pose = [0.,0.,0.]
     point_av = False
     
     cv2.namedWindow("cameras")
     cv2.namedWindow("detections")
+    
+    
+    # Show detected points on 3D plot
     
     # pos = np.array([[0,0,0]])
     # fig = plt.figure()
@@ -251,8 +269,7 @@ def new_process_start_processing(
     # plt.show()
     
     
-    # print(f"Server::SUBPROCESS::THREAD::new_process_start_processing(): Start processing")
-    
+    print(f"Server::SUBPROCESS::THREAD::new_process_start_processing(): Start processing")
     
     # Main loop
     status = "WAIT"
@@ -272,7 +289,7 @@ def new_process_start_processing(
         elif status == "OK":
             for i in range(streams_nb):
                 with shared_memory[i][0].get_lock():
-                    local_mem[i][0] = np.reshape(memory_handle[i][0].copy(), (1080, 1440))
+                    local_mem[i][0] = np.reshape(memory_handle[i][0].copy(), (im_height, im_width))
                 
                 with shared_memory[i][1].get_lock(), shared_memory[i][2].get_lock():
                     local_mem[i][2] = memory_handle[i][2][0]
@@ -287,7 +304,6 @@ def new_process_start_processing(
             continue
         elif status == "WORK":
             
-            
             # DEBUG
             # time.sleep(0.2)
             # status = "WAIT"
@@ -295,7 +311,6 @@ def new_process_start_processing(
             # continue
 
             t1 = time.perf_counter()
-            
             if receive_mode == 2 or receive_mode == 3:
                 
                 # Case 1.: Use homography matrixes to estimate pattern position in fixed plane
@@ -389,143 +404,134 @@ def new_process_start_processing(
             t2 = time.perf_counter()
             # print(f"Server:THREAD::run_processing: RECV: [{t1-t0:.06f}] PROC: [{t2-t1:.6f}] [s]")
             
-            # DEBUG 
-            if receive_mode == 1:
-                
-                off_h = 360
-                off_w = 480
-                blank = np.zeros((off_h*2,off_w*2), dtype=np.uint8)
-                for idx, pkg in enumerate(local_mem):
-                    ih = (idx // 2)
-                    iw = (idx % 2)
-                    blank[ih*off_h:(ih+1)*off_h, iw*off_w:(iw+1)*off_w] = cv2.resize(pkg[0], (off_w, off_h))
-                    cv2.putText(blank, f"CAMERA ID {pkg[3]}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                # cv2.imshow(pkg[0], cv2.resize(pkg[1], (480, 360)))
-                cv2.imshow("cameras", blank)
-                
-                # for i in range(sq):
-                #     for j in range(sq):
-                #         if i*sq+j >= streams_nb: break
-                #         bg[360*i:360*(i+1), 480*j:480*(j+1)] = local_mem[i*sq+j][1][:,:]
-                #         cv2.putText(bg, f"[{local_mem[i*sq+j][0]}]", (480*j+20,360*i+20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 2)
-                # cv2.imshow("images", bg)
-                
-                cv2.waitKey(1)
-                pass
-            
-            elif receive_mode == 2:
-                # for pkg in local_mem:
-                #     print(f"Server:THREAD::run_processing: From [{pkg[0]}] received: {pkg[1].flatten()}")
-
-                # if cnt:
-                #     tmp = []
-                #     for pkg in local_mem:
-                #         print(np.array(pkg[1]).shape, end=" ")
-                #         tmp.append(pkg[1])
-                #     print("")
-                #     plist.append(tmp)
-                
-                # txt = ""
-                # blank = np.zeros((160,1080), dtype=np.uint8)
-                # for i, pkg in enumerate(local_mem):
-                #     txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
-                #     cv2.putText(blank, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                # # if cnt == 0: av_time = t1-t0
-                # # else: av_time = ( cnt*av_time + (t1-t0) ) / (cnt+1)
-                # # cnt += 1
-                # # txt = f"TIME: RECV: {av_time:.6f} [s] FPS: {1/av_time:.2f} | PROC: {t2-t1:.6f} [s]"
-                # # cv2.putText(blank, txt, (20,25*(i+2)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                # cv2.imshow("detections", blank)
-                # cv2.waitKey(1)
-                
-                txt = ""
-                board = np.zeros((180,1080), dtype=np.uint8)
-                for i, pkg in enumerate(local_mem):
-                    txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
-                    cv2.putText(board, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                if cnt == 0: av_time = t2-t1
-                else: av_time = (cnt*av_time + (t2-t1)) / (cnt+1)
-                cnt += 1
-                txt = f"TIME: TOTAL: {av_time:.6f} [s] FPS: {1/av_time:.2f} | PROC: {t2-t1:.6f} [s]"
-                cv2.putText(board, txt, (20,25*(i+2)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                if point_av:
-                    txt = f"Estimated pose: [{pose[0]:.6f} {pose[1]:.6f} {pose[2]:.6f}]"
-                else:
-                    txt = "No points detected"
-                cv2.putText(board, txt, (20,25*(i+3)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                cv2.imshow("detections", board)
-                cv2.waitKey(1)
-                
-                
-                pass
-            
-            elif receive_mode == 3:
-                
-                # pos_c = (np.random.rand(1,3) - 0.5).astype(np.float32)
-                # pose += pos_c
-                
-                off_h = 360
-                off_w = 480
-                blank = np.zeros((off_h*2,off_w*2, 3), dtype=np.uint8)
-                for idx, pkg in enumerate(local_mem):
-                    ih = (idx // 2)
-                    iw = (idx % 2)
-                    for i in [0,1,2]: blank[ih*off_h:(ih+1)*off_h, iw*off_w:(iw+1)*off_w, i] = cv2.resize(pkg[0], (off_w, off_h))
-                    pt_len = pkg[2]
-                    for i in range(pt_len):
-                        x = pkg[1][i, 0]
-                        y = pkg[1][i, 1]
-                        
-                        x = int(x / 1440 * off_w) + iw*off_w
-                        y = int(y / 1080 * off_h) + ih*off_h
-                        
-                        cv2.circle(blank, (int(x), int(y)), int(4), (0,0,255), 2)
-                    cv2.putText(blank, f"CAM ID {pkg[3]}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                cv2.putText(blank, f"CNT: {cnt}", (off_w-40, off_h-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                cv2.imshow("cameras", blank)
-                
-                txt = ""
-                board = np.zeros((180,1080), dtype=np.uint8)
-                for i, pkg in enumerate(local_mem):
-                    txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
-                    cv2.putText(board, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                if cnt == 0: av_time = t2-t1
-                else: av_time = (cnt*av_time + (t2-t1)) / (cnt+1)
-                cnt += 1
-                txt = f"TIME: TOTAL: {av_time:.6f} [s] FPS: {1/av_time:.2f} | PROC: {t2-t1:.6f} [s]"
-                cv2.putText(board, txt, (20,25*(i+2)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                if point_av:
-                    txt = f"Estimated pose: [{pose[0]:.6f} {pose[1]:.6f} {pose[2]:.6f}]"
-                else:
-                    txt = "No points detected"
-                cv2.putText(board, txt, (20,25*(i+3)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
-                
-                cv2.imshow("detections", board)
-                cv2.waitKey(1)
-                
-                # if point_av:
-                #     plist.append([pose[0], pose[1], pose[2]])
-                # else:
-                #     plist.append([-1e9, -1e9, -1e9])
-                
-                pass
-            
-            # ...
-            
             status = "WAIT"
             data_read_in.send("WAIT")
             continue
+            
+            # # DEBUG 
+            # if receive_mode == 1:
+                
+            #     off_h = 360
+            #     off_w = 480
+            #     blank = np.zeros((off_h*2,off_w*2), dtype=np.uint8)
+            #     for idx, pkg in enumerate(local_mem):
+            #         ih = (idx // 2)
+            #         iw = (idx % 2)
+            #         blank[ih*off_h:(ih+1)*off_h, iw*off_w:(iw+1)*off_w] = cv2.resize(pkg[0], (off_w, off_h))
+            #         cv2.putText(blank, f"CAMERA ID {pkg[3]}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+            #     cv2.imshow("cameras", blank)
+                
+            #     # for i in range(sq):
+            #     #     for j in range(sq):
+            #     #         if i*sq+j >= streams_nb: break
+            #     #         bg[360*i:360*(i+1), 480*j:480*(j+1)] = local_mem[i*sq+j][1][:,:]
+            #     #         cv2.putText(bg, f"[{local_mem[i*sq+j][0]}]", (480*j+20,360*i+20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 2)
+            #     # cv2.imshow("images", bg)
+                
+            #     cv2.waitKey(1)
+            #     pass
+            
+            # elif receive_mode == 2:
+            #     # for pkg in local_mem:
+            #     #     print(f"Server:THREAD::run_processing: From [{pkg[0]}] received: {pkg[1].flatten()}")
+
+            #     # if cnt:
+            #     #     tmp = []
+            #     #     for pkg in local_mem:
+            #     #         print(np.array(pkg[1]).shape, end=" ")
+            #     #         tmp.append(pkg[1])
+            #     #     print("")
+            #     #     plist.append(tmp)
+                
+            #     # txt = ""
+            #     # blank = np.zeros((160,1080), dtype=np.uint8)
+            #     # for i, pkg in enumerate(local_mem):
+            #     #     txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
+            #     #     cv2.putText(blank, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     # # if cnt == 0: av_time = t1-t0
+            #     # # else: av_time = ( cnt*av_time + (t1-t0) ) / (cnt+1)
+            #     # # cnt += 1
+            #     # # txt = f"TIME: RECV: {av_time:.6f} [s] FPS: {1/av_time:.2f} | PROC: {t2-t1:.6f} [s]"
+            #     # # cv2.putText(blank, txt, (20,25*(i+2)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     # cv2.imshow("detections", blank)
+            #     # cv2.waitKey(1)
+                
+            #     txt = ""
+            #     board = np.zeros((180,1080), dtype=np.uint8)
+            #     for i, pkg in enumerate(local_mem):
+            #         txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
+            #         cv2.putText(board, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     if cnt == 0: av_time = t2-t1
+            #     else: av_time = (cnt*av_time + (t2-t1)) / (cnt+1)
+            #     cnt += 1
+            #     txt = f"TIME: TOTAL: {av_time:.6f} [s] FPS: {1/av_time:.2f} | PROC: {t2-t1:.6f} [s]"
+            #     cv2.putText(board, txt, (20,25*(i+2)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     if point_av:
+            #         txt = f"Estimated pose: [{pose[0]:.6f} {pose[1]:.6f} {pose[2]:.6f}]"
+            #     else:
+            #         txt = "No points detected"
+            #     cv2.putText(board, txt, (20,25*(i+3)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     cv2.imshow("detections", board)
+            #     cv2.waitKey(1)
+            #     pass
+            
+            # elif receive_mode == 3:
+                
+            #     # pos_c = (np.random.rand(1,3) - 0.5).astype(np.float32)
+            #     # pose += pos_c
+                
+            #     off_h = 360
+            #     off_w = 480
+            #     blank = np.zeros((off_h*2,off_w*2, 3), dtype=np.uint8)
+            #     for idx, pkg in enumerate(local_mem):
+            #         ih = (idx // 2)
+            #         iw = (idx % 2)
+            #         for i in [0,1,2]: blank[ih*off_h:(ih+1)*off_h, iw*off_w:(iw+1)*off_w, i] = cv2.resize(pkg[0], (off_w, off_h))
+            #         pt_len = pkg[2]
+            #         for i in range(pt_len):
+            #             x = pkg[1][i, 0]
+            #             y = pkg[1][i, 1]
+                        
+            #             x = int(x / 1440 * off_w) + iw*off_w
+            #             y = int(y / 1080 * off_h) + ih*off_h
+                        
+            #             cv2.circle(blank, (int(x), int(y)), int(4), (0,0,255), 2)
+            #         cv2.putText(blank, f"CAM ID {pkg[3]}", (iw*off_w+20, ih*off_h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+            #     cv2.putText(blank, f"CNT: {cnt}", (off_w-40, off_h-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+            #     cv2.imshow("cameras", blank)
+                
+            #     txt = ""
+            #     board = np.zeros((180,1080), dtype=np.uint8)
+            #     for i, pkg in enumerate(local_mem):
+            #         txt = f"From [{pkg[3]}] received: [{pkg[2]}]"
+            #         cv2.putText(board, txt, (20,25*(i+1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     if cnt == 0: av_time = t2-t1
+            #     else: av_time = (cnt*av_time + (t2-t1)) / (cnt+1)
+            #     cnt += 1
+            #     txt = f"TIME: TOTAL: {av_time:.6f} [s] FPS: {1/av_time:.2f} | PROC: {t2-t1:.6f} [s]"
+            #     cv2.putText(board, txt, (20,25*(i+2)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     if point_av:
+            #         txt = f"Estimated pose: [{pose[0]:.6f} {pose[1]:.6f} {pose[2]:.6f}]"
+            #     else:
+            #         txt = "No points detected"
+            #     cv2.putText(board, txt, (20,25*(i+3)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+                
+            #     cv2.imshow("detections", board)
+            #     cv2.waitKey(1)
+            #     pass
+            
+            # status = "WAIT"
+            # data_read_in.send("WAIT")
+            # continue
     
-    # DEBUG
-    cv2.destroyWindow("cameras")
-    cv2.destroyWindow("detections")
-    
-    # plist = np.array(plist)
-    # np.save("device/plist.npy", plist, allow_pickle=True)
+    # # DEBUG
+    # cv2.destroyWindow("cameras")
+    # cv2.destroyWindow("detections")
+

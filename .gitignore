@@ -1,5 +1,13 @@
+# python cache files
 *__pycache__/
-*archives/
 
-*venv/
-*.venv/
+# python virtual environment
+.venv/
+venv/
+
+# local, ignored files
+local/
+
+# saved data from edge devices, server or for calibration matrixes
+server/
+device/

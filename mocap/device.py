@@ -58,8 +58,7 @@ class MocapCamera():
         self.blocked = False
         self.process = None
         
-        # Get detection method # @TODO need fix
-        # detection_mode = self.config["DETECTION"].get("METHOD", "MARKERS")
+        # Get detection method
         if detection_method == 1:
             self.detection_mode = "MARKERS"
         elif detection_method == 2:
@@ -176,6 +175,10 @@ class MocapCamera():
     
     def _stop_camera(self):
         self.camera.StopGrabbing()
+    
+    def _wait_for_process(self):
+        while self.process.is_alive():
+            pass
     
     def _run_process_calibrate_camera(self):
         if self.blocked:

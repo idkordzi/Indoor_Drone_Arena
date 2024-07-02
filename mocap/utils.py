@@ -6,7 +6,6 @@ from datetime import datetime
 
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
 
 from pypylon import pylon
 from sklearn.metrics import r2_score
@@ -34,7 +33,7 @@ class SampleImageEventHandler(pylon.ImageEventHandler):
             img = grabResult.GetArray()
             with self.shared_memory.get_lock():
                 self.shared_memory_np[:] = img.reshape(-1)
-            self.pipe_in.send("OK")
+            if not self.pipe.poll(): self.pipe_in.send("OK")
 
 
 class ImageSaver():
@@ -101,11 +100,11 @@ class VideoStreamSubscriber:
         for pub in self.hostnames[1:]:
             receiver.connect(f"tcp://{pub}:{self.port}")
         mode = self.mode
-        rec_fun = None
-        if mode == 0: rec_fun = receiver.recv_jpg
-        elif mode == 1: rec_fun = receiver.recv_image
+        rec_func = None
+        if mode == 0: rec_func = receiver.recv_jpg
+        elif mode == 1: rec_func = receiver.recv_image
         while not self._stop:
-            self._data = rec_fun()
+            self._data = rec_func()
             self._data_ready.set()
         receiver.close()
 
@@ -115,7 +114,7 @@ class VideoStreamSubscriber:
 
 
 # ################################################################################################################################
-# Functions (Edge device)
+# Functions
 # ################################################################################################################################
 
 
@@ -175,13 +174,13 @@ def get_homography_matrix(image: np.ndarray, markers: list, pattern: dict, vis: 
     #     for idx, x, y in sorted_markers:
     #         cv2.circle(image_copy, (int(x), int(y)), 5, (255,0,0), 4)
     #         cv2.putText(image_copy, f"{idx+1}", (int(x)+10, int(y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,0), 2)
-    #     plt.imshow(image_copy)
-    #     plt.show()
+    #     cv2.imshow("Points", image_copy)
 
     return H
 
 
 def get_projection_matrix(image: np.ndarray, markers: list, pattern: dict, vis: bool=False) -> np.ndarray:
+    
     indexed_markers = [(0, x, y) for x, y, _ in markers]
     sorted_markers = find_corresponding_points(indexed_markers)
     
@@ -195,6 +194,7 @@ def get_projection_matrix(image: np.ndarray, markers: list, pattern: dict, vis: 
 
 def find_corresponding_points(vec: list) -> list:
     """Sort points based on marker shape"""
+    
     pairs = []
     r2_vec = []
     z_vec = []
@@ -282,8 +282,7 @@ def find_corresponding_points(vec: list) -> list:
 
 
 def check_first_pair_side(intersection, separate, z_first, z_second) -> bool:
-    """Return True if first pair is left side"""
-    """Return False if first pair is right side"""
+    """ Return True if first pair is left side. Return False if first pair is right side. """
 
     x1, y1 = intersection
     x2, y2 = separate
@@ -357,7 +356,7 @@ def detect_by_markers(image: np.ndarray, config: dict) -> list:
     # morph_image = binary_image
 
     connectivity = 8
-    num_labels, _, stats, centroids =  cv2.connectedComponentsWithStats(morph_image, connectivity, cv2.CV_32S)
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(morph_image, connectivity, cv2.CV_32S)
     objs = []
     
     for idx in range(1, num_labels):
@@ -375,10 +374,10 @@ def detect_by_markers(image: np.ndarray, config: dict) -> list:
             m_yi-marker_size >= 0 and m_yi+marker_size <= height):
 
             objs.append([*centroids[idx], m_radius])
-        
         # objs.append([*centroids[idx], m_radius])
     
     return objs
+
 
 def detect_by_foreground(
     image: np.ndarray,
@@ -387,7 +386,6 @@ def detect_by_foreground(
     background: np.ndarray=None ,
     foreground_mask: np.ndarray=None
 ) -> list:
-    
     """ Detect markers on the image """
     
     binary_threshold = config["BIN_THR"]
@@ -405,8 +403,7 @@ def detect_by_foreground(
     # imgMrp = cv2.erode(blurred, kernel)
     # imgMrp = cv2.dilate(imgMrp, kernel)
     # imgMrp = cv2.medianBlur(imgMrp, blur_size)
-    
-    
+
     
     background = ( background + (background < image) - (background > image) )
     # background[foreground_mask] = ( alpha*image.astype(np.float64) + (1-alpha)*background.astype(np.float64) )[foreground_mask]
@@ -420,7 +417,6 @@ def detect_by_foreground(
     imgMrp = cv2.dilate(imgMrp, kernel)
     imgMrp = cv2.medianBlur(imgMrp, blur_size)
     foreground_mask = (imgMrp < 1)
-    
     
 
     connectivity = 8

@@ -9,7 +9,8 @@ from .header import (
 from .imagezmq import ImageSender
 from .utils import (
     detect_by_markers,
-    detect_by_foreground,
+    # detect_by_foreground,
+    calibrate_camera,
     find_corresponding_points,
     get_homography_matrix,
     get_projection_matrix,
@@ -28,12 +29,13 @@ def new_process_send_images(
     
     """ Send images to the server """
     
-    debug_flag = False
+    # debug_flag = False
+    # if debug_flag: cv2.namedWindow("frame")
     
-    if debug_flag: cv2.namedWindow("frame")
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
     pub_port = config["PUBLISHERS"]["PORT_IMG"][0]
     sender = ImageSender(connect_to=f"tcp://*:{pub_port}", REQ_REP=False)
+    
     print(f"MocapCamera::SUBPROCESS::new_process_send_images: Start processing")
     while True:
         status = pipe_out.recv()
@@ -41,13 +43,16 @@ def new_process_send_images(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        if debug_flag:
-            cv2.imshow("frame", frame)
-            cv2.waitKey(1)
+        
+        # if debug_flag:
+        #     cv2.imshow("frame", frame)
+        #     cv2.waitKey(1)
+
         _, frame = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         sender.send_jpg_pubsub(f"{msg}", frame)
+    
     print(f"MocapCamera::SUBPROCESS::new_process_send_images: Stop process")
-    if debug_flag: cv2.destroyWindow("frame")
+    # if debug_flag: cv2.destroyWindow("frame")
     return
 
 
@@ -62,16 +67,19 @@ def new_process_send_detections(
     
     """ Send detections to the server """
 
-    detection_method = config["DETECTION"].get("METHOD", "MARKERS")
-    detection_function = None
-    if detection_method == "MARKERS":
-        detection_function = lambda frame: detect_by_markers(frame, config["DETECTION"]["MARKERS"])
-    elif detection_method == "FOREGROUND":
-        cMoG = cv2.createBackgroundSubtractorMOG2()
-        detection_function = lambda frame: detect_by_foreground(frame, config["DETECTION"]["FOREGROUND"], cMoG)
+    # detection_method = config["DETECTION"].get("METHOD", "MARKERS")
+    # detection_function = None
+    # if detection_method == "MARKERS":
+    #     detection_function = lambda frame: detect_by_markers(frame, config["DETECTION"]["MARKERS"])
+    # elif detection_method == "FOREGROUND":
+    #     cMoG = cv2.createBackgroundSubtractorMOG2()
+    #     detection_function = lambda frame: detect_by_foreground(frame, config["DETECTION"]["FOREGROUND"], cMoG)
+    config_dict = config["DETECTION"]["MARKERS"]
+    
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
     pub_port = config["PUBLISHERS"]["PORT_PTS"][0]
     sender = ImageSender(connect_to=f"tcp://*:{pub_port}", REQ_REP=False)
+    
     print(f"MocapCamera::SUBPROCESS::new_process_send_detections: Start processing")
     while True:
         status = pipe_out.recv()
@@ -79,8 +87,12 @@ def new_process_send_detections(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        objs = detection_function(frame)
+        
+        # objs = detection_function(frame)
+        objs = detect_by_markers(frame, config_dict)
+
         sender.send_image_pubsub(f"{msg}", np.array(objs, dtype=np.float32))
+    
     print(f"MocapCamera::SUBPROCESS::new_process_send_detections: Stop process")
     return
 
@@ -96,8 +108,10 @@ def new_process_send_all(
     
     """ Send both images and detections to the server """
     
-    foreground_detection_mode = 3
-    debug_flag = False
+    # debug_flag = False
+    # if debug_flag:
+    #     cv2.namedWindow("detection")
+    #     cv2.namedWindow("debug")
     
     # imgSaver = ImageSaver(
     #     config["DEVICE"]["DIR"],
@@ -105,38 +119,41 @@ def new_process_send_all(
     #     config["DEVICE"]["STEP"],
     #     config["DEVICE"]["CLEAR"])
     
-    if debug_flag:
-        cv2.namedWindow("detection")
-        cv2.namedWindow("debug")
-    detection_method = config["DETECTION"].get("METHOD", "MARKERS")
-    detection_function = None
-    if detection_method == "MARKERS":
-        detection_mode = 1
-        detection_function = lambda frame: detect_by_markers(frame, config["DETECTION"]["MARKERS"])
-        first_iter_flag = False
-    elif detection_method == "FOREGROUND":
-        detection_mode = 2
-        machine = None
-        background = None
-        foreground_mask = None
-        first_iter_flag = False
-        if foreground_detection_mode == 1: machine = cv2.createBackgroundSubtractorMOG2()
-        if foreground_detection_mode == 2: machine = cv2.createBackgroundSubtractorKNN()
-        if foreground_detection_mode == 3:
-            background = np.zeros((1080, 1440), dtype=np.uint8)
-            foreground_mask = np.ones((1080, 1440), dtype=np.bool8)
-            first_iter_flag = True
-        detection_function = lambda frame: detect_by_foreground(frame,
-                                                                config["DETECTION"]["FOREGROUND"], 
-                                                                machine=machine, 
-                                                                background=background, 
-                                                                foreground_mask=foreground_mask)
+    # detection_method = config["DETECTION"].get("METHOD", "MARKERS")
+    # detection_function = None
+    # if detection_method == "MARKERS":
+    #     detection_mode = 1
+    #     detection_function = lambda frame: detect_by_markers(frame, config["DETECTION"]["MARKERS"])
+    #     first_iter_flag = False
+    # elif detection_method == "FOREGROUND":
+    #     detection_mode = 2
+    #     foreground_detection_method = config["DETECTION"]["FOREGROUND"].get("METHOD", 1)
+    #     machine = None
+    #     background = None
+    #     foreground_mask = None
+    #     first_iter_flag = False
+    #     if foreground_detection_method == 1:
+    #         machine = cv2.createBackgroundSubtractorMOG2()
+    #     if foreground_detection_method == 2:
+    #         machine = cv2.createBackgroundSubtractorKNN()
+    #     if foreground_detection_method == 3:
+    #         background = np.zeros((1080, 1440), dtype=np.uint8)
+    #         foreground_mask = np.ones((1080, 1440), dtype=np.bool8)
+    #         first_iter_flag = True
+    #     detection_function = lambda frame: detect_by_foreground(frame,
+    #                                                             config["DETECTION"]["FOREGROUND"], 
+    #                                                             machine=machine, 
+    #                                                             background=background, 
+    #                                                             foreground_mask=foreground_mask)
+    config_dict = config["DETECTION"]["MARKERS"]
+    
     detection_limit = config["DETECTION"].get("MAX_DETECTIONS", 10)
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
     pub_port_img = config["PUBLISHERS"]["PORT_IMG"][0]
     sender_img = ImageSender(connect_to=f"tcp://*:{pub_port_img}", REQ_REP=False)
     pub_port_det = config["PUBLISHERS"]["PORT_PTS"][0]
     sender_det = ImageSender(connect_to=f"tcp://*:{pub_port_det}", REQ_REP=False)
+    
     print(f"MocapCamera::SUBPROCESS::new_process_send_all: Start processing")
     while True:
         status = pipe_out.recv()
@@ -144,36 +161,43 @@ def new_process_send_all(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
-        if first_iter_flag:
-            background = frame.copy()
-            first_iter_flag = False
-        objs = detection_function(frame)
+        
+        # if first_iter_flag:
+        #     background = frame.copy()
+        #     first_iter_flag = False
+        # objs = detection_function(frame)
+
+        objs = detect_by_markers(frame, config_dict)
         if len(objs) > detection_limit:
             objs = objs[:detection_limit]
-        if detection_mode == 2:
-            i = 1
-            x_g = 0
-            y_g = 0
-            for x, y, a in objs:
-                x_g += x * a
-                y_g += y * a
-                i += a
-            x_g = int(x_g / i)
-            y_g = int(y_g / i)
-            objs = [[x_g, y_g, 0]]
-        if debug_flag:
-            blank = np.concatenate([frame[:,:,None], frame[:,:,None], frame[:,:,None]], axis=-1)
-            if detection_mode == 2: cv2.circle(blank, (x_g, y_g), int(4), (0,0,255), 6)
-            cv2.imshow("detection", cv2.resize(blank, None, fx=0.5, fy=0.5))
-            cv2.waitKey(1)
+        
+        # if detection_mode == 2:
+        #     i = 1
+        #     x_g = 0
+        #     y_g = 0
+        #     for x, y, a in objs:
+        #         x_g += x * a
+        #         y_g += y * a
+        #         i += a
+        #     x_g = int(x_g / i)
+        #     y_g = int(y_g / i)
+        #     objs = [[x_g, y_g, 0]]
+        
+        # if debug_flag:
+        #     blank = np.concatenate([frame[:,:,None], frame[:,:,None], frame[:,:,None]], axis=-1)
+        #     if detection_mode == 2: cv2.circle(blank, (x_g, y_g), int(4), (0,0,255), 6)
+        #     cv2.imshow("detection", cv2.resize(blank, None, fx=0.5, fy=0.5))
+        #     cv2.waitKey(1)
         # imgSaver.save_image(blank)
+        
         _, frame = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         sender_img.send_jpg_pubsub(f"{msg}", frame)
         sender_det.send_image_pubsub(f"{msg}", np.array(objs, dtype=np.float32))
+    
     print(f"MocapCamera::SUBPROCESS::new_process_send_all: Stop process")
-    if debug_flag:
-        cv2.destroyWindow("detection")
-        cv2.destroyWindow("debug")
+    # if debug_flag:
+    #     cv2.destroyWindow("detection")
+    #     cv2.destroyWindow("debug")
     return
 
 
@@ -195,9 +219,13 @@ def new_process_calibrate_camera(
         clr =config["DEVICE"].get("CLEAR", True),
     )
     scale_display = 0.5
+    cam_id = "000"
+    if msg is not None:
+        cam_id = msg.split(".")[-1]
     
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
     flag = False
+    
     print(f"MocapCamera::SUBPROCESS::new_process_calibrate_camera: Start processing")
     while True:
         status = pipe_out.recv()
@@ -205,6 +233,7 @@ def new_process_calibrate_camera(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
+        
         cv2.imshow("frame", cv2.resize(frame, None, fx=scale_display, fy=scale_display))
         resp = cv2.waitKey(1)
         if resp == ord('q'):
@@ -216,7 +245,15 @@ def new_process_calibrate_camera(
         if flag:
             print(f"MocapCamera::SUBPROCESS::new_process_calibrate_camera: Maximum number of images reached")
             break
+    
     cv2.destroyWindow("frame")
+    print(f"MocapCamera::SUBPROCESS::new_process_calibrate_camera: Start calibrating")
+    imgSaver.dir
+    _, K, _, _, _ = calibrate_camera(imgSaver.dir, config["CALIB"])
+    save_dir = config["DEVICE"].get("DIR", "device")
+    np.save(f"{save_dir}/K_{cam_id}.npy", K)
+    print(f"MocapCamera::SUBPROCESS::new_process_calibrate_camera: "
+          f"File saved to [{save_dir}/K_{cam_id}.npy]")
     print(f"MocapCamera::SUBPROCESS::new_process_calibrate_camera: Stop process")
     return
 
@@ -235,14 +272,13 @@ def new_process_calculate_homography_matrix(
     save_dir = config["DEVICE"].get("DIR", "device")
     new_pattern = move_pattern(PATTERN, v=[0., 0., 0.])
     scale_display = 0.5
-    if msg is None:
-        cam_id = "x0"
-    else:
+    cam_id = "000"
+    if msg is not None:
         cam_id = msg.split(".")[-1]
-    # cam_id = "x0"
     
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
     flag_en = False
+    
     print(f"MocapCamera::SUBPROCESS::new_process_calculate_homography_matrix: Start processing")
     while True:
         status = pipe_out.recv()
@@ -250,11 +286,13 @@ def new_process_calculate_homography_matrix(
         with shared_memory.get_lock():
             frame = np.copy(shared_np)
             frame = frame.reshape((im_height, im_width))
+        
         objs = detect_by_markers(frame, config["DETECTION"]["MARKERS"])
         flag_en = (len(objs) == PATTERN_PNB)
         if flag_en:
             indexed_markers = [(0, x, y) for x, y, _ in objs]
             sorted_markers = find_corresponding_points(indexed_markers)
+        
         blank = np.zeros((im_height, im_width, 3), dtype=np.uint8)
         for i in [0,1,2]: blank[:,:,i] = frame
         for x, y, r in objs:
@@ -273,6 +311,7 @@ def new_process_calculate_homography_matrix(
                   f"File saved to [{save_dir}/H_{cam_id}.npy]")
         elif resp == ord('q'):
             break
+    
     cv2.destroyWindow("frame")
     print(f"MocapCamera::SUBPROCESS::new_process_calculate_homography_matrix: Stop process")
     return
@@ -290,11 +329,9 @@ def new_process_calculate_projection_matrix(
     save_dir = config["DEVICE"].get("DIR", "device")
     new_pattern = move_pattern(PATTERN, v=[0., 0., 0.])
     scale_display = 0.5
-    if msg is None:
-        cam_id = "x0"
-    else:
+    cam_id = "000"
+    if msg is not None:
         cam_id = msg.split(".")[-1]
-    # cam_id = "x0"
     
     shared_np = np.frombuffer(shared_memory.get_obj(), dtype=np.uint8)
     flag_en = False
@@ -311,6 +348,7 @@ def new_process_calculate_projection_matrix(
         if flag_en:
             indexed_markers = [(0, x, y) for x, y, _ in objs]
             sorted_markers = find_corresponding_points(indexed_markers)
+        
         blank = np.zeros((im_height, im_width, 3), dtype=np.uint8)
         for i in [0,1,2]: blank[:,:,i] = frame
         for x, y, r in objs:
@@ -329,6 +367,7 @@ def new_process_calculate_projection_matrix(
                   f"File saved to [{save_dir}/P_{cam_id}.npy]")
         elif resp == ord('q'):
             break
+    
     cv2.destroyWindow("frame")
     print(f"MocapCamera::SUBPROCESS::new_process_calculate_projection_matrix: Stop process")
     return
@@ -346,8 +385,10 @@ def new_process_dummy_process(
     wait_ns: float=16.0,
 ) -> None:
     
+    """ Dummy process for debug """
+    
     print(f"MocapCamera::SUBPROCESS::new_process_dummy_process: Init process")
-    cam_id = "x0"
+    cam_id = "000"
     save_dir = config["DEVICE"].get("DIR", "device")
     pub_port_img = config["PUBLISHERS"]["PORT_IMG"][0]
     pub_port_det = config["PUBLISHERS"]["PORT_PTS"][0]

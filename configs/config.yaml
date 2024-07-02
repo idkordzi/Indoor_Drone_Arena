@@ -1,54 +1,55 @@
-# Detection receiver config 
+# Detection receiver config
 SERVER:
-    DIR: "server"
-    TIMEOUT: 10.0
-    CLEAR: True
+    DIR:    "server/" # save directory
+    TIMEOUT: 10.0     # timeout [s]
+    CLEAR:   True     # remove save directory on quiting
 
 # Edge device config
 DEVICE:
-    DIR: "device"
-    NB: 1000
-    STEP: 1
-    CLEAR: True
+    DIR:   "device/" # save directory
+    NB:    100       # number of images to save in total
+    STEP:  1         # save step (saves each <step> image)
+    CLEAR: True      # remove save directory on quiting
 
 # Controller config
 CONTROLLER:
     # IP: ["127.0.0.1"]
-    IP: ["192.168.0.119"]
-    PORT: ["4000"]
+    IP:   ["192.168.50.119"] # IP addres
+    PORT: ["4000"]           # communication port
 
 # List of publishers IPs
 PUBLISHERS:
     # IP: ["127.0.0.1"]
     IP: ["192.168.0.127", "192.168.0.135", "192.168.0.143", "192.168.0.151"]
-    PORT_IMG: ["5550"]
-    PORT_PTS: ["5555"]
+    PORT_IMG: ["5550"] # communication port for images sharing
+    PORT_PTS: ["5555"] # communication port for detection points sharing
 
 # Camera config
 CAMERA:
-    FPS: 60
-    EXPOSURE: 6000
-    TRIGGER: False # True
-    IM_WIDTH: 1440
-    IM_HEIGHT: 1080
+    FPS: 60         # FPS (in software-trigger mode)
+    EXPOSURE: 6000  # exposure time [ns]
+    TRIGGER: False  # external trigger (TRUE if external trigger is available)
+    IM_WIDTH: 1440  # Frame width
+    IM_HEIGHT: 1080 # Frame height
 
 # Detection config
 DETECTION:
-    MAX_DETECTIONS: 10
-    MARKERS:
-        BIN_THR: 180  # 180
-        K_SIZE: 21    # 21
-        CIRC_THR: 0.2 # 0.8
-        W_H_DIFF: 20  # 20
-        MARK_SIZE: 50 # 100
-        AREA_THR: 1   # 80
-    FOREGROUND:
+    MAX_DETECTIONS: 10 # Max number of detected points/objects
+    MARKERS:         # detect markers on the image
+        BIN_THR: 180  # binarization threshold, old val: 180
+        K_SIZE: 21    # morphology kernel size, old val: 21
+        CIRC_THR: 0.2 # circularity coefficient, old val: 0.8
+        W_H_DIFF: 20  # width to height difference, old val: 20
+        MARK_SIZE: 50 # detected marker size, old val: 100
+        AREA_THR: 1   # detection minilam area, old val: 80
+    FOREGROUND:      # detect object on the image using foreground detection methods (untested)
+        METHOD: 3
         BIN_THR: 30
         B_SIZE: 21
         K_SIZE: 3
         ALPHA: 0.1
 
-# Stereo calibration config
+# Camera inner parameters calibration config
 CALIB:
-    ROWS: 6
-    COLS: 9
+    ROWS: 6 # rows number on calibration chessboard
+    COLS: 9 # column number on calibration chessboard

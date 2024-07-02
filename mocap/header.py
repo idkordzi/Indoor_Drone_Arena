@@ -1,32 +1,31 @@
 import yaml
 
-import cv2
+# import cv2
 import numpy as np
 
 
-CAMERAS_NB = 4
-CAMERA_IDS = [127, 135, 143, 151]
+# CAMERAS_NB = 4                    # number of active cameras
+# CAMERA_IDS = [127, 135, 143, 151] # abribrary cameras ids
 
+# default calibration matrix, based on basler camera factory parameters
 K_DEFAULT = np.array([[162,   0, 720],
                       [  0, 162, 540],
                       [  0,   0,   1]], dtype="double")
 
-CHESSBOARD_LAYOUT = (6, 9)
-CHESSBOARD_CALIB_CRITERIA = (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+# # default calibration chessboard properties
+# CHESSBOARD_LAYOUT = (6, 9)
+# CHESSBOARD_CALIB_CRITERIA = (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
+# default calibration pattern properties (D-Calib method)
 PATTERN_PNB = 6
 PATTERN = {
-    0: [1.200, 1.500, 0.0], # +1.2, 1.5, 0.0
-    1: [1.375, 1.500, 0.0],
-    2: [1.550, 1.500, 0.0],
-    3: [1.550, 1.850, 0.0],
-    4: [1.200, 1.850, 0.0],
-    5: [1.200, 1.675, 0.0],
+    0: [0.000, 0.000, 0.0],
+    1: [0.175, 0.000, 0.0],
+    2: [0.350, 0.000, 0.0],
+    3: [0.350, 0.350, 0.0],
+    4: [0.000, 0.350, 0.0],
+    5: [0.000, 0.175, 0.0],
 }
-
-CMD_LEN = 8
-CMD_OFFSET_EDGE = 8
-CMD_OFFSET_SERVER = 16
 
 
 def read_config(config_file: str) -> dict:
