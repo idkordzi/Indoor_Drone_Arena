@@ -5,9 +5,11 @@ if __name__ == "__main__":
                                      "edge devices")
     parser.add_argument("-n", "--network", type=int, choices=[0, 1], default=1,
                         help="Indicates connection to network")
-    parser.add_argument("-d", "--detection", type=int, choices=[0, 1, 2, 3], default=0,
+    parser.add_argument("-m", "--mode", type=int, choices=[0, 1, 2, 3, 4], default=0,
                         help="Work mode: 0 - stops server; 1 - receive frames; "
-                        "2 - receive detections, 3 - receive both frames and detections")
+                        "2 - receive detections; 3 - receive both frames and detections; "
+                        "4 - calibrate system (requires edge devices to send both frames and "
+                        "detections)")
     parser.add_argument("-l", "--listen", type=int, choices=[0, 1], default=0,
                         help="Runs in listener mode, can be controlled via remote controller, "
                         "overrides other work modes")

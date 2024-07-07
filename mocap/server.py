@@ -9,6 +9,7 @@ from .header import read_config
 from .server_functions import (
     new_process_start_receiving,
     new_process_start_processing,
+    new_process_start_calibrating,
 )
 
 
@@ -50,7 +51,7 @@ class Server():
         self.pipe_data_receive = Pipe()
         self.pipe_data_process = Pipe()
 
-    def run(self, receive_mode: int=1) -> None:
+    def run(self, work_mode: int=1) -> None:
         if self.process_receive is not None or self.process_process is not None:
             print("Server::run()::WARRNING: Subprocesses are already set!")
             return
@@ -60,15 +61,19 @@ class Server():
                   self.pipe_data_process[1],
                   self.shared_memory,
                   self.config,
-                  receive_mode)
+                  work_mode)
         )
+        if work_mode == 4:
+            target_func = new_process_start_calibrating
+        else:
+            target_func = new_process_start_processing
         self.process_process = Process(
-            target=new_process_start_processing, 
+            target=target_func, 
             args=(self.pipe_data_receive[1],
                   self.pipe_data_process[0],
                   self.shared_memory,
                   self.config,
-                  receive_mode)
+                  work_mode)
         )
         self.process_receive.start()
         self.process_process.start()
